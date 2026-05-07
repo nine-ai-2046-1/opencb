@@ -26,11 +26,44 @@ pub struct ServeHandler {
 impl EventHandler for ServeHandler {
     async fn message(&self, ctx: Context, msg: Message) {
         // 🚫 唔處理自己發嘅訊息，避免無限循環
-        if msg.author.id == ctx.cache.current_user().id {
+        let current_user_id = ctx.cache.current_user().id;
+        if msg.author.id == current_user_id {
             return;
         }
 
-        let metadata: MessageMetadata = extract_message_metadata(&ctx, &msg);
+        // ➕ 只處理有提及 bot id 嘅 Guild 訊息；若冇提及就忽略
+        // For guild messages require an explicit mention of the bot.
+        if msg.guild_id.is_some() {
+            let mentioned_bot = msg.mentions.iter().any(|u| u.id == current_user_id);
+            if !mentioned_bot {
+                // Not mentioning the bot -> ignore
+                return;
+            }
+        } else {
+            // 🔒 Direct message (DM) path: verify we can open a DM channel with the user
+            // If we cannot create/open a DM channel (e.g. blocked or privacy settings), skip processing.
+            if let Err(e) = msg.author.create_dm_channel(&ctx.http).await {
+                warn!("⚠️ Cannot open DM channel with user {}: {}", msg.author.id, e);
+                return;
+            }
+        }
+
+        // Extract metadata and then strip the explicit bot mention from the message content
+        let mut metadata: MessageMetadata = extract_message_metadata(&ctx, &msg);
+
+        // Remove explicit mention tokens for this bot: <@123...> and <@!123...>
+        let bot_id_str = current_user_id.to_string();
+        metadata.content = metadata
+            .content
+            .replace(&format!("<@{}>", bot_id_str), "")
+            .replace(&format!("<@!{}>", bot_id_str), "");
+
+        // Normalize whitespace (collapse multiple spaces/newlines into single spaces, trim ends)
+        metadata.content = metadata
+            .content
+            .split_whitespace()
+            .collect::<Vec<&str>>()
+            .join(" ");
 
         // 📝 照常輸出 JSON metadata 到 stdout
         match serde_json::to_string_pretty(&metadata) {
