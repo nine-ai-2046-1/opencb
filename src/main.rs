@@ -9,6 +9,7 @@ mod error;
 mod outbound;
 mod inbound;
 mod handler;
+mod scheduler;
 
 // 引入所需類型
 use clap::Parser;
@@ -16,9 +17,12 @@ use serenity::all::*;
 use serenity::builder::CreateMessage;
 use serenity::model::id::ChannelId;
 use tracing::info;
+use tracing::error;
 use cli::{Cli, Commands};
 use handler::ServeHandler;
 use error::handle_discord_error;
+use scheduler::{build_job, persist_job_to_disk, load_jobs_from_disk, InMemoryJobStore, HttpJobExecutor, ScheduledJob, Scheduler, JobStore};
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -53,9 +57,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     subscriber.init();
 
     match cli.command {
-        Some(Commands::Send { message }) => {
+        Some(Commands::Send { message, time, date }) => {
             let msg = message.join(" ");
             info!("Sending message via HTTP API (no Gateway needed)");
+
+            // If time flag present, build job and persist to disk so serve can pick it up
+            if let Some(t) = time {
+                let date_opt = date;
+                match build_job(msg.clone(), date_opt.clone(), &t) {
+                    Ok(job) => {
+                        let path = scheduler::scheduled_jobs_file_path();
+                        if let Err(e) = persist_job_to_disk(&path, &job) {
+                            eprintln!("Failed to persist scheduled job to {}: {}", path, e);
+                            std::process::exit(1);
+                        }
+                        println!("✅ Scheduled job {} at {} (persisted to {})", job.id, job.run_at_local_minute, path);
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        eprintln!("Invalid time/date: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
 
             // 直接用 HTTP API - 唔需要 Gateway/event loop 🚀
             let http = serenity::http::Http::new(&config.bot_token);
@@ -93,6 +117,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await?;
 
             info!("Starting bot in serve mode");
+
+            // --- Scheduler init: in-memory store + HTTP executor ---
+            let store = Arc::new(InMemoryJobStore::new());
+            let executor = Arc::new(HttpJobExecutor::new(config.bot_token.clone(), config.channel_id));
+            let scheduler = Arc::new(Scheduler::new(store.clone(), executor));
+            let _sched_handle = scheduler.start();
+
+            // load persisted jobs from disk (if any) and add to in-memory store
+            match load_jobs_from_disk(&scheduler::scheduled_jobs_file_path()) {
+                Ok(jobs) => {
+                    if !jobs.is_empty() {
+                        info!("Loaded {} persisted scheduled jobs from disk", jobs.len());
+                        for job in jobs {
+                            let store_ref: &dyn JobStore = &*store;
+                            if let Err(e) = store_ref.add_job(job) {
+                                error!("Failed to load persisted job into store: {}", e);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to load persisted scheduled jobs: {}", e);
+                }
+            }
+
             if let Err(e) = client.start().await {
                 handle_discord_error(e);
             }

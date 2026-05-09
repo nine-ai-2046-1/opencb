@@ -11,6 +11,9 @@ use crate::config::{Config, TargetSpec};
 use crate::inbound::extract_message_metadata;
 use crate::outbound::send_message_to_channel;
 use crate::types::MessageMetadata;
+use crate::scheduler::{InMemoryJobStore, ScheduledJob, JobStore};
+use std::sync::Arc;
+use uuid::Uuid;
 
 /// 📏 Discord 單則訊息上限係 2000 字元，留少少 buffer
 const DISCORD_MSG_LIMIT: usize = 1900;
@@ -128,6 +131,44 @@ impl EventHandler for ServeHandler {
             }
         }
     }
+}
+
+// --------------------------------------------------
+// Helper: schedule a send from CLI while server running
+// --------------------------------------------------
+/// Build a ScheduledJob and push into provided store
+pub fn schedule_send_job(store: Arc<InMemoryJobStore>, message: String, ymd: String, hhmm: String) -> Result<ScheduledJob, String> {
+    let id = Uuid::new_v4().to_string();
+    // construct local DateTime
+    let parts: Vec<u32> = ymd.split('-').filter_map(|s| s.parse::<u32>().ok()).collect();
+    if parts.len() != 3 { return Err("invalid date".into()); }
+    let year = parts[0] as i32;
+    let month = parts[1] as u32;
+    let day = parts[2] as u32;
+    let hm: Vec<u32> = hhmm.split(':').filter_map(|s| s.parse::<u32>().ok()).collect();
+    if hm.len() != 2 { return Err("invalid time".into()); }
+    let hour = hm[0];
+    let minute = hm[1];
+
+    use chrono::TimeZone;
+    let local_dt = chrono::Local.ymd(year, month, day).and_hms(hour, minute, 0);
+    let run_at_iso = local_dt.to_rfc3339();
+    let run_at_local_minute = format!("{:04}-{:02}-{:02}T{:02}:{:02}", year, month, day, hour, minute);
+
+    let job = ScheduledJob {
+        id: id.clone(),
+        job_type: "send".to_string(),
+        message,
+        run_at_iso,
+        run_at_local_minute: run_at_local_minute.clone(),
+        created_at: chrono::Local::now().to_rfc3339(),
+        meta: None,
+    };
+
+    // Arc<InMemoryJobStore> doesn't have JobStore methods directly - deref to trait object
+    let store_ref: &dyn JobStore = &*store;
+    store_ref.add_job(job.clone()).map_err(|e| format!("store add failed: {}", e))?;
+    Ok(job)
 }
 
 /// 🛠️ 執行 target CLI 並將 stdout 回覆到 Discord channel

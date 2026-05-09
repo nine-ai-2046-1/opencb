@@ -32,5 +32,11 @@ pub enum Commands {
         /// 💌 要發送嘅消息內容（至少一個詞）
         #[arg(num_args = 1.., required = true)]
         message: Vec<String>,
+        /// ⏰ 可選：排程發送時間，格式 HH:MM（機器本地時區）
+        #[arg(short = 't', long = "time", value_name = "HH:MM")]
+        time: Option<String>,
+        /// 📅 可選：排程日期，格式 YYYY-MM-DD（若無則使用機器本地日期）
+        #[arg(short = 'd', long = "date", value_name = "YYYY-MM-DD")]
+        date: Option<String>,
     },
 }
