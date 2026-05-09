@@ -17,30 +17,21 @@ Usage highlights
 - Send example: `opencb send "Hello World 🎉"`
 - Serve example: `opencb serve` or `opencb --config /path/to/config.toml serve`
 
-Scheduling (SQLite & Admin)
+Scheduling (in-memory admin-driven)
 
 Overview
-- The scheduler supports three storage options in this precedence:
-  1. SCHEDULED_JOBS_DB environment variable (absolute path to SQLite DB file)
-  2. If not set and you started `serve` with `--config /path/to/config.toml`, the DB defaults to the same folder as the config file: `/path/to/scheduled_jobs.db`
-  3. If no config path provided, the DB defaults to the executable folder (`<exe>/scheduled_jobs.db`) or the current working directory if exe parent can't be resolved.
+- The scheduler now runs in pure in-memory mode by default. Scheduled jobs are kept in the running serve process memory and are not persisted to disk or SQLite by default.
 
-If no DB is used, `opencb send -t "HH:MM"` falls back to persisting to `scheduled_jobs.json` (unchanged behavior).
+Admin endpoint
+- The serve process exposes a small admin HTTP endpoint POST /schedule which accepts ScheduledJob JSON and inserts it into the in-memory queue. This is the recommended way to schedule jobs when serve is running.
+- Configuration: set scheduled_admin_bind in config.toml (default: "127.0.0.1:19001") to control the bind address for the admin HTTP endpoint. You can still set SCHEDULED_ADMIN_BIND env var as an alternate override.
+- Authentication: if SCHEDULED_ADMIN_TOKEN is set (env), the admin endpoint requires `Authorization: Bearer <token>`.
 
-Admin endpoint (optional)
-- You can run a small admin HTTP server that accepts scheduled job submissions via POST /schedule. This is useful for remote scheduling or CI automation.
-- Env vars:
-  - SCHEDULED_ADMIN_URL: If set, CLI `send -t` will POST to `$SCHEDULED_ADMIN_URL/schedule` first.
-  - SCHEDULED_ADMIN_TOKEN: Bearer token used to protect the admin endpoint. If set, requests must include `Authorization: Bearer <token>`.
+CLI behavior (send with -t)
+- The CLI `opencb send -t "HH:MM"` will attempt to POST to the configured admin endpoint (SCHEDULED_ADMIN_URL env or default localhost). If the admin server is not available or returns an error, scheduling will fail (there is no file/DB fallback in pure in-memory mode).
 
-CLI precedence (send with -t)
-1. If SCHEDULED_ADMIN_URL is set, `send -t` will try POST /schedule and respect the admin response.
-2. Else if SCHEDULED_JOBS_DB is set (or derived via config/exe/cwd), the job is inserted into the SQLite DB.
-3. Else fallback: append to `scheduled_jobs.json` in the configured or default path.
-
-Migration & import
-- When DB mode is enabled at startup, if `scheduled_jobs.json` exists the server will import its jobs into the DB inside a single transaction, and the original file will be renamed to `scheduled_jobs.json.imported-<YYYYMMDD-HHMMSS>` as a backup.
-- To skip automatic import, set `SCHEDULED_JOBS_IMPORT_SKIP=true`.
+Migration & notes
+- The previous SQLite and scheduled_jobs.json fallback code remains in the repository for now but is unused in the default in-memory flow. If you rely on persistent scheduling, tell us and we can re-enable or provide migration steps.
 
 Environment variables (summary)
 - SCHEDULED_JOBS_DB — optional. Absolute path to SQLite DB file.

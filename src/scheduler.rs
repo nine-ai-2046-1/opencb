@@ -91,68 +91,7 @@ impl JobStore for InMemoryJobStore {
     }
 }
 
-/// Compute scheduled_jobs.json path
-pub fn scheduled_jobs_file_path() -> String {
-    if let Ok(path) = std::env::var("SCHEDULED_JOBS_PATH") {
-        return path;
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            return parent
-                .join("scheduled_jobs.json")
-                .to_string_lossy()
-                .to_string();
-        }
-    }
-    "scheduled_jobs.json".to_string()
-}
-
-/// Persist a job to disk (append to JSON array)
-pub fn persist_job_to_disk(
-    path: &str,
-    job: &ScheduledJob,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let p = PathBuf::from(path);
-    let mut jobs: Vec<ScheduledJob> = if p.exists() {
-        let data = fs::read_to_string(&p)?;
-        serde_json::from_str(&data).unwrap_or_else(|_| Vec::new())
-    } else {
-        Vec::new()
-    };
-    jobs.push(job.clone());
-    let tmp = format!("{}.tmp", path);
-    let mut f = fs::File::create(&tmp)?;
-    let content = serde_json::to_string_pretty(&jobs)?;
-    f.write_all(content.as_bytes())?;
-    fs::rename(tmp, path)?;
-    Ok(())
-}
-
-/// Load jobs from disk and delete the file
-pub fn load_jobs_from_disk(path: &str) -> Result<Vec<ScheduledJob>, Box<dyn std::error::Error>> {
-    let p = PathBuf::from(path);
-    if !p.exists() {
-        return Ok(Vec::new());
-    }
-    let data = fs::read_to_string(&p)?;
-    let jobs: Vec<ScheduledJob> = serde_json::from_str(&data)?;
-    // remove file
-    let _ = fs::remove_file(&p);
-    Ok(jobs)
-}
-
-/// Read jobs from disk but DO NOT delete file (used for importing safely)
-pub fn read_jobs_from_disk_no_delete(
-    path: &str,
-) -> Result<Vec<ScheduledJob>, Box<dyn std::error::Error>> {
-    let p = PathBuf::from(path);
-    if !p.exists() {
-        return Ok(Vec::new());
-    }
-    let data = fs::read_to_string(&p)?;
-    let jobs: Vec<ScheduledJob> = serde_json::from_str(&data)?;
-    Ok(jobs)
-}
+// Removed file/DB persistence helpers — scheduler is pure in-memory
 
 /// Build job from message, optional date (YYYY-MM-DD) and time (HH:MM)
 pub fn build_job(
