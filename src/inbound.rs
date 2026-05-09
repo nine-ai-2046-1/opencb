@@ -18,14 +18,22 @@ pub fn extract_message_metadata(ctx: &Context, msg: &Message) -> MessageMetadata
     let channel = ChannelMetadata {
         id: msg.channel_id.to_string(),
         name: msg.guild_id.and_then(|guild_id| {
-            ctx.cache
-                .guild(guild_id)
-                .and_then(|guild| guild.channels.get(&msg.channel_id).map(|channel| channel.name.clone()))
+            ctx.cache.guild(guild_id).and_then(|guild| {
+                guild
+                    .channels
+                    .get(&msg.channel_id)
+                    .map(|channel| channel.name.clone())
+            })
         }),
         channel_type: msg
             .guild_id
             .and_then(|guild_id| ctx.cache.guild(guild_id))
-            .and_then(|guild| guild.channels.get(&msg.channel_id).map(|channel| format!("{:?}", channel.kind)))
+            .and_then(|guild| {
+                guild
+                    .channels
+                    .get(&msg.channel_id)
+                    .map(|channel| format!("{:?}", channel.kind))
+            })
             .unwrap_or_else(|| "Unknown".to_string()),
     };
 

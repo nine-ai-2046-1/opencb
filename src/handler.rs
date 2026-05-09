@@ -43,7 +43,10 @@ impl EventHandler for ServeHandler {
             // 🔒 Direct message (DM) path: verify we can open a DM channel with the user
             // If we cannot create/open a DM channel (e.g. blocked or privacy settings), skip processing.
             if let Err(e) = msg.author.create_dm_channel(&ctx.http).await {
-                warn!("⚠️ Cannot open DM channel with user {}: {}", msg.author.id, e);
+                warn!(
+                    "⚠️ Cannot open DM channel with user {}: {}",
+                    msg.author.id, e
+                );
                 return;
             }
         }
@@ -111,20 +114,20 @@ impl EventHandler for ServeHandler {
         }
 
         if let Ok(channel_id_str) = env::var("CHANNEL_ID") {
-            match channel_id_str.parse::<u64>() {
-                Ok(channel_id) => {
-                    let test_message = format!(
-                        "🚀 Bot {} is online and ready!",
-                        data_about_bot.user.name
-                    );
-                    match send_message_to_channel(&ctx, channel_id, &test_message).await {
-                        Some(_) => info!("✅ Startup message sent to channel {}", channel_id),
-                        None => error!("❌ Failed to send startup message"),
-                    }
+            // Accept comma-separated list or single ID; prefer first valid u64
+            let first_valid = channel_id_str
+                .split(',')
+                .filter_map(|s| s.trim().parse::<u64>().ok())
+                .next();
+            if let Some(channel_id) = first_valid {
+                let test_message =
+                    format!("🚀 Bot {} is online and ready!", data_about_bot.user.name);
+                match send_message_to_channel(&ctx, channel_id, &test_message).await {
+                    Some(_) => info!("✅ Startup message sent to channel {}", channel_id),
+                    None => error!("❌ Failed to send startup message"),
                 }
-                Err(e) => {
-                    error!("❌ Invalid CHANNEL_ID format: {}", e);
-                }
+            } else {
+                error!("❌ Invalid CHANNEL_ID format: {}", channel_id_str);
             }
         }
     }
@@ -161,12 +164,8 @@ async fn run_target_and_reply(
         Ok(o) => o,
         Err(e) => {
             error!("❌ 執行 target CLI 失敗: {}", e);
-            let _ = send_message_to_channel(
-                &ctx,
-                channel_id,
-                &format!("⚠️ 執行 CLI 失敗: {}", e),
-            )
-            .await;
+            let _ = send_message_to_channel(&ctx, channel_id, &format!("⚠️ 執行 CLI 失敗: {}", e))
+                .await;
             return;
         }
     };
@@ -196,7 +195,11 @@ async fn run_target_and_reply(
     }
 
     let reply = truncate(trimmed, DISCORD_MSG_LIMIT);
-    info!("✅ Target CLI 完成，回覆 {} 字元到 channel {}", reply.len(), channel_id);
+    info!(
+        "✅ Target CLI 完成，回覆 {} 字元到 channel {}",
+        reply.len(),
+        channel_id
+    );
     let _ = send_message_to_channel(&ctx, channel_id, &reply).await;
 }
 

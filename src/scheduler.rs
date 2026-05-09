@@ -45,7 +45,7 @@ impl ScheduledJob {
 
 /// JobStore trait — synchronous for simplicity
 pub trait JobStore: Send + Sync {
-    fn add_job(&self, job: ScheduledJob) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    fn add_job(&self, job: &ScheduledJob) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     fn fetch_and_remove_due_jobs(&self, local_minute: &str) -> Vec<ScheduledJob>;
 }
 
@@ -56,19 +56,27 @@ pub struct InMemoryJobStore {
 
 impl InMemoryJobStore {
     pub fn new() -> Self {
-        Self { inner: Mutex::new(Vec::new()) }
+        Self {
+            inner: Mutex::new(Vec::new()),
+        }
     }
 }
 
 impl JobStore for InMemoryJobStore {
-    fn add_job(&self, job: ScheduledJob) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut guard = self.inner.lock().map_err(|e| format!("mutex poisoned: {}", e))?;
-        guard.push(job);
+    fn add_job(&self, job: &ScheduledJob) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|e| format!("mutex poisoned: {}", e))?;
+        guard.push(job.clone());
         Ok(())
     }
 
     fn fetch_and_remove_due_jobs(&self, local_minute: &str) -> Vec<ScheduledJob> {
-        let mut guard = match self.inner.lock() { Ok(g) => g, Err(p) => p.into_inner() };
+        let mut guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
         let mut due = Vec::new();
         let mut remaining = Vec::new();
         for job in guard.drain(..) {
@@ -90,14 +98,20 @@ pub fn scheduled_jobs_file_path() -> String {
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            return parent.join("scheduled_jobs.json").to_string_lossy().to_string();
+            return parent
+                .join("scheduled_jobs.json")
+                .to_string_lossy()
+                .to_string();
         }
     }
     "scheduled_jobs.json".to_string()
 }
 
 /// Persist a job to disk (append to JSON array)
-pub fn persist_job_to_disk(path: &str, job: &ScheduledJob) -> Result<(), Box<dyn std::error::Error>> {
+pub fn persist_job_to_disk(
+    path: &str,
+    job: &ScheduledJob,
+) -> Result<(), Box<dyn std::error::Error>> {
     let p = PathBuf::from(path);
     let mut jobs: Vec<ScheduledJob> = if p.exists() {
         let data = fs::read_to_string(&p)?;
@@ -128,7 +142,9 @@ pub fn load_jobs_from_disk(path: &str) -> Result<Vec<ScheduledJob>, Box<dyn std:
 }
 
 /// Read jobs from disk but DO NOT delete file (used for importing safely)
-pub fn read_jobs_from_disk_no_delete(path: &str) -> Result<Vec<ScheduledJob>, Box<dyn std::error::Error>> {
+pub fn read_jobs_from_disk_no_delete(
+    path: &str,
+) -> Result<Vec<ScheduledJob>, Box<dyn std::error::Error>> {
     let p = PathBuf::from(path);
     if !p.exists() {
         return Ok(Vec::new());
@@ -139,7 +155,11 @@ pub fn read_jobs_from_disk_no_delete(path: &str) -> Result<Vec<ScheduledJob>, Bo
 }
 
 /// Build job from message, optional date (YYYY-MM-DD) and time (HH:MM)
-pub fn build_job(message: String, date: Option<String>, time: &str) -> Result<ScheduledJob, Box<dyn std::error::Error>> {
+pub fn build_job(
+    message: String,
+    date: Option<String>,
+    time: &str,
+) -> Result<ScheduledJob, Box<dyn std::error::Error>> {
     // validate time HH:MM
     if !time.chars().all(|c| c.is_digit(10) || c == ':') || time.split(':').count() != 2 {
         return Err("invalid time format, expected HH:MM".into());
@@ -151,7 +171,10 @@ pub fn build_job(message: String, date: Option<String>, time: &str) -> Result<Sc
     let dt_str = format!("{}T{}:00", date_str, time);
     // parse as local
     let naive = chrono::NaiveDateTime::parse_from_str(&dt_str, "%Y-%m-%dT%H:%M:%S")?;
-    let local_dt = Local.from_local_datetime(&naive).single().ok_or("ambiguous local datetime")?;
+    let local_dt = Local
+        .from_local_datetime(&naive)
+        .single()
+        .ok_or("ambiguous local datetime")?;
     let id = uuid::Uuid::new_v4().to_string();
     Ok(ScheduledJob::new(id, message, local_dt))
 }

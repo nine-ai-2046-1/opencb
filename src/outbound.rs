@@ -4,7 +4,11 @@
 use serenity::all::{ChannelId, Context, CreateMessage, Message};
 use tracing::error;
 
-pub async fn send_message_to_channel(ctx: &Context, channel_id: u64, content: &str) -> Option<Message> {
+pub async fn send_message_to_channel(
+    ctx: &Context,
+    channel_id: u64,
+    content: &str,
+) -> Option<Message> {
     let channel_id = ChannelId::new(channel_id);
 
     match channel_id
