@@ -96,17 +96,26 @@ opencb --version
 
 ```bash
 
-# Execute once, will automatically create config.toml
+# Execute once, will automatically create config at ~/.config/opencb/config.toml
 
 opencb
 
-# Then edit config.toml, fill in your Bot Token
+# Then edit the config file, fill in your Bot Token
 
-vim config.toml
+vim ~/.config/opencb/config.toml
 
 ```
 
-### Configuration File Description (config.toml)
+The default config path is `~/.config/opencb/config.toml`. If the file does not exist, OpenCB will automatically create it with default values and prompt you to fill in your Bot Token.
+
+You can also specify a custom config path with `-c` / `--config`:
+
+```bash
+opencb -c /path/to/your/config.toml serve
+opencb --config /path/to/your/config.toml send "Hello"
+```
+
+### Configuration File Description (~/.config/opencb/config.toml)
 
 ```toml
 
@@ -119,9 +128,9 @@ debug = true # Optional: Enable debug logging
 
 ## 🎯 New Feature: External CLI Target (chat-with-cli)
 
-You can define a target CLI (e.g., `[opencode]`) in `config.toml`. When the Bot receives a message, it will call this CLI and reply with the execution result to the channel.
+You can define a target CLI (e.g., `[opencode]`) in `~/.config/opencb/config.toml`. When the Bot receives a message, it will call this CLI and reply with the execution result to the channel.
 
-Example (added to config.toml):
+Example (added to ~/.config/opencb/config.toml):
 
 ```toml
 
@@ -154,7 +163,7 @@ Notes:
 
 - Executing external commands carries risks; please only use trusted CLIs and pay attention to the work_dir setting.
 
-> ⚠️ **Important**: Go to https://discord.com/developers/applications Create an application, add a bot, and copy the Token to `config.toml`
+> ⚠️ **Important**: Go to https://discord.com/developers/applications Create an application, add a bot, and copy the Token to `~/.config/opencb/config.toml`
 
 ### Command 1: Send a message (Send mode)
 
@@ -189,14 +198,9 @@ opencb
 
 opencb serve
 
-# Optional: Specify the configuration file path
+# Optional: Specify a custom configuration file path
 
-opencb --config /path/to/config.toml serve
-
-# Optional: Set the CHANNEL_ID environment variable, bot A test message will be sent when ready.
-
-export CHANNEL_ID=123456789012345678
-opencb serve
+opencb -c /path/to/config.toml serve
 
 ```
 
@@ -250,8 +254,6 @@ delivery/dev/
 
 ├── 🚫 .gitignore # Git ignore rules
 
-├── ⚙️ config.toml # Configuration file (automatically generated at runtime)
-
 ├── 📂 src/
 
 │ ├── 🚀 main.rs # Main program entry point (line 159)
@@ -288,7 +290,7 @@ delivery/dev/
 
 | `types.rs` | 66 | 📊 Define structured types such as MessageMetadata |
 
-| `config.rs` | 80 | ⚙️ Read, validate, and generate config.toml |
+| `config.rs` | 80 | ⚙️ Read, validate, and generate ~/.config/opencb/config.toml |
 
 | `cli.rs` | 31 | 🎯 Parse CLI parameters using clap |
 
@@ -327,7 +329,7 @@ cargo test
 
 ### Q: How do I get a Bot Token?
 
-A: Go to https://discord.com/developers/applications → Create Application → Bot → Reset Token → Copy the Token and paste it into config.toml
+A: Go to https://discord.com/developers/applications → Create Application → Bot → Reset Token → Copy the Token and paste it into `~/.config/opencb/config.toml`
 
 ### Q: How do I get a channel ID?
 
@@ -345,7 +347,7 @@ A: Ensure:
 
 2. The bot is online (running in server mode)
 
-3. The token in config.toml is correct
+3. The token in `~/.config/opencb/config.toml` is correct
 
 ## 📄 License
 
