@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// 🎯 Target CLI 規格（用嚟描述要叫邊個外部 CLI）
 /// 例如 [opencode] cmd="opencode" argv=["run","#INPUT#"] work_dir="/tmp"
@@ -48,13 +48,6 @@ impl Config {
             .collect()
     }
 
-    /// Try to parse owner_id strings into u64 values. Invalid entries are ignored.
-    pub fn owner_ids_u64(&self) -> Vec<u64> {
-        self.owner_id
-            .iter()
-            .filter_map(|s| s.parse::<u64>().ok())
-            .collect()
-    }
 }
 
 impl Default for Config {
@@ -94,12 +87,20 @@ pub fn load_config(config_path: Option<&str>) -> Result<Config, Box<dyn std::err
                 p.to_path_buf()
             }
         }
-        None => std::env::current_dir()?.join("config.toml"),
+        None => {
+            let home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .map_err(|_| "Cannot determine home directory ($HOME or $USERPROFILE)")?;
+            PathBuf::from(home).join(".config").join("opencb").join("config.toml")
+        }
     };
 
     if !path.exists() {
         if config_path.is_none() {
             let default_config = Config::default();
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
             // 🖊️ 手動拼出預設 config 文字（包含 [opencode] 範例 + 註解）
             let toml_str = render_default_toml(&default_config);
             fs::write(&path, toml_str)?;
