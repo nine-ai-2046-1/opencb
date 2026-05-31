@@ -9,6 +9,7 @@ mod handler;
 mod inbound;
 mod outbound;
 mod scheduler;
+mod splitter;
 mod types;
 
 // 引入所需類型
@@ -18,8 +19,8 @@ use cli::{Cli, Commands};
 use error::handle_discord_error;
 use handler::ServeHandler;
 use serenity::all::*;
-use serenity::builder::CreateMessage;
 use serenity::model::id::{ChannelId, UserId};
+use splitter::send_split_message;
 use chrono::Local;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,6 +28,38 @@ use crate::scheduler::JobStore;
 use serde_json::json;
 use tracing::info;
 // admin server will capture store/token in closure captures
+
+/// Convert literal escape sequences in message content to real characters.
+/// Order: `\\` → `\` first (to handle `\\n` correctly), then `\r\n` → CR+LF, then `\n` → LF.
+pub fn process_message_content(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\\' && i + 1 < chars.len() {
+            if chars[i + 1] == '\\' {
+                result.push('\\');
+                i += 2;
+                continue;
+            }
+            // Check for literal `\r\n` (4 chars: \, r, \, n)
+            if chars[i + 1] == 'r' && i + 3 < chars.len() && chars[i + 2] == '\\' && chars[i + 3] == 'n' {
+                result.push('\r');
+                result.push('\n');
+                i += 4;
+                continue;
+            }
+            if chars[i + 1] == 'n' {
+                result.push('\n');
+                i += 2;
+                continue;
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+    result
+}
 
 // Extract time/date flags from a message Vec and from raw argv fallback.
 // Returns (effective_time, effective_date, cleaned_message)
@@ -44,9 +77,10 @@ fn extract_time_date_message(
 
         // If a token contains whitespace (user quoted a phrase that includes flags)
         // split it and process subparts, then rebuild remaining text.
+        // Only split on spaces, NOT newlines — preserve line breaks.
         if token.contains(' ') {
             let mut subparts: Vec<String> =
-                token.split_whitespace().map(|s| s.to_string()).collect();
+                token.split(' ').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
             let mut j = 0usize;
             while j < subparts.len() {
                 let sub = subparts[j].clone();
@@ -225,7 +259,13 @@ fn extract_time_date_message(
         }
     }
 
-    let cleaned = parts.join(" ");
+    // If shell expanded $NEWS as a single argument, preserve its newlines.
+    // If multiple args (user typed words), join with spaces.
+    let cleaned = if parts.len() == 1 {
+        parts[0].clone()
+    } else {
+        parts.join(" ")
+    };
     (effective_time, effective_date, cleaned)
 }
 
@@ -374,20 +414,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .split(',')
                     .filter_map(|s| s.trim().parse::<u64>().ok())
                     .collect();
+                let processed_msg = process_message_content(&full_msg);
                 for uid in user_ids {
                     let http = serenity::http::Http::new(&config.bot_token);
                     let user = UserId::new(uid);
                     match user.create_dm_channel(&http).await {
                         Ok(pm) => {
-                            let cid = pm.id;
-                            // Use the low-level send helper from outbound.rs to avoid type headaches
-                            let _ctx_stub = None::<&()>; // placeholder to keep types local; we'll call HTTP API directly
-                            let _ = cid
-                                .send_message(
-                                    &http,
-                                    serenity::builder::CreateMessage::new().content(&full_msg),
-                                )
-                                .await;
+                            send_split_message(&http, pm.id, &processed_msg, 2000).await;
                         }
                         Err(e) => {
                             eprintln!("❌ Failed to open DM channel for user {}: {}", uid, e);
@@ -400,22 +433,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if override_channel_ids.is_empty() {
                 eprintln!("❌ No channel configured in config.toml (channel_id is empty) and no --rc provided. Set channel_id to a list like [\"123\"] or pass --rc.");
             } else {
+                let processed_msg = process_message_content(&full_msg);
                 for chid in override_channel_ids.into_iter() {
                     let channel_id = ChannelId::new(chid);
-                    match channel_id
-                        .send_message(&http, CreateMessage::new().content(&full_msg))
-                        .await
-                    {
-                        Ok(sent_msg) => {
-                            info!(
-                                "✅ Message sent to channel {} (msg id: {})",
-                                chid, sent_msg.id
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("❌ 发送失败 to {}: {}", chid, e);
-                        }
-                    }
+                    send_split_message(&http, channel_id, &processed_msg, 2000).await;
+                    info!("✅ Message sent to channel {}", chid);
                 }
             }
 
@@ -463,6 +485,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 }
+                                let full_msg = process_message_content(&full_msg);
 
                                 // Channel recipients: per-job override (rc) else config defaults
                                 let mut channel_ids: Vec<u64> = Vec::new();
@@ -481,17 +504,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     for cid in channel_ids.iter() {
                                         let channel = ChannelId::new(*cid);
                                         info!("Attempting to send scheduled job {} to channel {}", job.id, cid);
-                                        match channel
-                                            .send_message(&http, CreateMessage::new().content(&full_msg))
-                                            .await
-                                        {
-                                            Ok(sent_msg) => {
-                                                info!("Scheduled job {} sent to channel {} msg_id={}", job.id, cid, sent_msg.id);
-                                            }
-                                            Err(e) => {
-                                                eprintln!("Failed to send scheduled job {} to channel {}: {}", job.id, cid, e);
-                                            }
-                                        }
+                                        send_split_message(&http, channel, &full_msg, 2000).await;
+                                        info!("Scheduled job {} sent to channel {}", job.id, cid);
                                     }
                                 } else {
                                     // no channels configured and no per-job override — log warning
@@ -505,18 +519,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                             for u in arr.iter().filter_map(|v| v.as_u64()) {
                                                 let user = UserId::new(u);
                                                 if let Ok(pm) = user.create_dm_channel(&http).await {
-                                                    match pm
-                                                        .id
-                                                        .send_message(&http, CreateMessage::new().content(&full_msg))
-                                                        .await
-                                                    {
-                                                        Ok(sent_msg) => {
-                                                            info!("Scheduled job {} sent via DM to user {} msg_id={}", job.id, u, sent_msg.id);
-                                                        }
-                                                        Err(e) => {
-                                                            eprintln!("Failed to send scheduled job {} via DM to user {}: {}", job.id, u, e);
-                                                        }
-                                                    }
+                                                    send_split_message(&http, pm.id, &full_msg, 2000).await;
+                                                    info!("Scheduled job {} sent via DM to user {}", job.id, u);
                                                 } else {
                                                     eprintln!("Failed to open DM for user {} when sending scheduled job {}", u, job.id);
                                                 }
@@ -739,5 +743,40 @@ mod tests {
         let json = serde_json::to_string_pretty(&metadata).unwrap();
         assert!(json.contains("\"id\": \"123\""));
         assert!(json.contains("\"content\": \"test\""));
+    }
+
+    #[test]
+    fn test_process_message_single_newline() {
+        assert_eq!(process_message_content("Hello\\nWorld"), "Hello\nWorld");
+    }
+
+    #[test]
+    fn test_process_message_double_newline() {
+        assert_eq!(process_message_content("Para1\\n\\nPara2"), "Para1\n\nPara2");
+    }
+
+    #[test]
+    fn test_process_message_crlf() {
+        assert_eq!(process_message_content("Line1\\r\\nLine2"), "Line1\r\nLine2");
+    }
+
+    #[test]
+    fn test_process_message_escaped_newline() {
+        assert_eq!(process_message_content("Show me \\\\n literally"), "Show me \\n literally");
+    }
+
+    #[test]
+    fn test_process_message_mixed() {
+        assert_eq!(process_message_content("A\\nB\\\\nC"), "A\nB\\nC");
+    }
+
+    #[test]
+    fn test_process_message_plain_text() {
+        assert_eq!(process_message_content("Hello World"), "Hello World");
+    }
+
+    #[test]
+    fn test_process_message_empty() {
+        assert_eq!(process_message_content(""), "");
     }
 }

@@ -12,9 +12,6 @@ use crate::inbound::extract_message_metadata;
 use crate::outbound::send_message_to_channel;
 use crate::types::MessageMetadata;
 
-/// 📏 Discord 單則訊息上限係 2000 字元，留少少 buffer
-const DISCORD_MSG_LIMIT: usize = 1900;
-
 /// 🤖 Serve 模式 handler
 /// 內含 config（用嚟攞 targets）同 target name（CLI 啟動時指定）
 pub struct ServeHandler {
@@ -61,12 +58,13 @@ impl EventHandler for ServeHandler {
             .replace(&format!("<@{}>", bot_id_str), "")
             .replace(&format!("<@!{}>", bot_id_str), "");
 
-        // Normalize whitespace (collapse multiple spaces/newlines into single spaces, trim ends)
+        // Normalize whitespace: preserve line breaks but collapse multiple spaces within lines
         metadata.content = metadata
             .content
-            .split_whitespace()
-            .collect::<Vec<&str>>()
-            .join(" ");
+            .lines()
+            .map(|line| line.split_whitespace().collect::<Vec<&str>>().join(" "))
+            .collect::<Vec<String>>()
+            .join("\n");
 
         // 📝 照常輸出 JSON metadata 到 stdout
         match serde_json::to_string_pretty(&metadata) {
@@ -122,10 +120,8 @@ impl EventHandler for ServeHandler {
             if let Some(channel_id) = first_valid {
                 let test_message =
                     format!("🚀 Bot {} is online and ready!", data_about_bot.user.name);
-                match send_message_to_channel(&ctx, channel_id, &test_message).await {
-                    Some(_) => info!("✅ Startup message sent to channel {}", channel_id),
-                    None => error!("❌ Failed to send startup message"),
-                }
+                send_message_to_channel(&ctx, channel_id, &test_message).await;
+                info!("✅ Startup message sent to channel {}", channel_id);
             } else {
                 error!("❌ Invalid CHANNEL_ID format: {}", channel_id_str);
             }
@@ -182,9 +178,9 @@ async fn run_target_and_reply(
         let reply = format!(
             "⚠️ CLI exit={:?}\n```\n{}\n```",
             output.status.code(),
-            truncate(&stderr, DISCORD_MSG_LIMIT - 40)
+            &stderr
         );
-        let _ = send_message_to_channel(&ctx, channel_id, &reply).await;
+        send_message_to_channel(&ctx, channel_id, &reply).await;
         return;
     }
 
@@ -194,23 +190,9 @@ async fn run_target_and_reply(
         return;
     }
 
-    let reply = truncate(trimmed, DISCORD_MSG_LIMIT);
     info!(
-        "✅ Target CLI 完成，回覆 {} 字元到 channel {}",
-        reply.len(),
+        "✅ Target CLI 完成，回覆到 channel {}",
         channel_id
     );
-    let _ = send_message_to_channel(&ctx, channel_id, &reply).await;
-}
-
-/// ✂️ 截斷字串到指定長度（按 char 邊界）
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let mut end = max;
-    while !s.is_char_boundary(end) && end > 0 {
-        end -= 1;
-    }
-    format!("{}…", &s[..end])
+    send_message_to_channel(&ctx, channel_id, trimmed).await;
 }
