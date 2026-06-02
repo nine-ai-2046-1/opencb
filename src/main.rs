@@ -9,6 +9,7 @@ mod handler;
 mod inbound;
 mod outbound;
 mod scheduler;
+mod slash_commands;
 mod splitter;
 mod types;
 
@@ -281,14 +282,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    // ✅ 及早檢查：如果 CLI 啟動時指定咗 target，立即驗證 config 裡面有無該 target
-    if let Some(ref target_name) = cli.target {
-        if !config.targets.contains_key(target_name) {
-            eprintln!(
-                "❌ Target '{}' 喺 config.toml 入面搵唔到，請檢查 [<target>] table 同名稱是否一致",
-                target_name
-            );
-            std::process::exit(1);
+    // ✅ 及早檢查：如果 CLI 啟動時指定咗 target，立即驗證 profile 裡面有無該 target
+    // (Target validation is now per-profile; defer to serve command resolution)
+    // For Send command, validate against default profile
+    if let Some(Commands::Send { .. }) = &cli.command {
+        if let Some(ref target_name) = cli.target {
+            let default_profile = config.profiles.get("default");
+            if let Some(profile) = default_profile {
+                if !profile.targets.contains_key(target_name) {
+                    eprintln!(
+                        "❌ Target '{}' not found in default profile targets",
+                        target_name
+                    );
+                    std::process::exit(1);
+                }
+            }
         }
     }
 
@@ -309,6 +317,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ru,
             mu,
         }) => {
+            // Resolve default profile for Send command
+            let send_profile = config.profiles.get("default").cloned().unwrap_or_else(|| {
+                eprintln!("❌ No 'default' profile found in config.toml");
+                std::process::exit(1);
+            });
             // Extract flags and cleaned message
             let (effective_time, effective_date, msg) =
                 extract_time_date_message(message, time, date);
@@ -381,7 +394,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("Sending message via HTTP API (no Gateway needed)");
 
             // 直接用 HTTP API - 唔需要 Gateway/event loop 🚀
-            let http = serenity::http::Http::new(&config.bot_token);
+            let http = serenity::http::Http::new(&send_profile.bot_token);
             // For CLI 'send' allow overriding target channels via -c; accepts comma-separated ids.
             // Resolve final channel list (rc overrides config channel list)
             let override_channel_ids: Vec<u64> = rc
@@ -391,7 +404,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .filter_map(|x| x.trim().parse::<u64>().ok())
                         .collect()
                 })
-                .unwrap_or_else(|| config.channel_ids_u64());
+                .unwrap_or_else(|| send_profile.channel_ids_u64());
 
             // Append mentions if provided (mu)
             let full_msg = if let Some(mu_str) = mu {
@@ -416,7 +429,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .collect();
                 let processed_msg = process_message_content(&full_msg);
                 for uid in user_ids {
-                    let http = serenity::http::Http::new(&config.bot_token);
+                    let http = serenity::http::Http::new(&send_profile.bot_token);
                     let user = UserId::new(uid);
                     match user.create_dm_channel(&http).await {
                         Ok(pm) => {
@@ -446,6 +459,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(0);
         }
         None | Some(Commands::Serve { .. }) => {
+            // Resolve profile name from CLI (default "default")
+            let profile_name = match &cli.command {
+                Some(Commands::Serve { profile }) => profile.clone(),
+                _ => "default".to_string(),
+            };
+
+            // Look up profile in config
+            let profile = match config.profiles.get(&profile_name) {
+                Some(p) => p.clone(),
+                None => {
+                    eprintln!(
+                        "❌ Profile '{}' not found in config.toml. Available profiles: {:?}",
+                        profile_name,
+                        config.profiles.keys().collect::<Vec<_>>()
+                    );
+                    std::process::exit(1);
+                }
+            };
+
             let intents = GatewayIntents::GUILD_MESSAGES
                 | GatewayIntents::DIRECT_MESSAGES
                 | GatewayIntents::MESSAGE_CONTENT;
@@ -463,9 +495,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Spawn a background worker that polls the in-memory job store and sends due jobs
             {
                 let store = Arc::clone(&in_memory_store);
-                let config_for_task = config.clone();
+                let profile_for_task = profile.clone();
                 tokio::spawn(async move {
-                    let http = serenity::http::Http::new(&config_for_task.bot_token);
+                    let http = serenity::http::Http::new(&profile_for_task.bot_token);
                     loop {
                         let minute = Local::now().format("%Y-%m-%dT%H:%M").to_string();
                         let due = store.fetch_and_remove_due_jobs(&minute);
@@ -497,7 +529,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                                 if channel_ids.is_empty() {
-                                    channel_ids = config_for_task.channel_ids_u64();
+                                    channel_ids = profile_for_task.channel_ids_u64();
                                 }
 
                                 if !channel_ids.is_empty() {
@@ -642,10 +674,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
 
-            let mut client = Client::builder(&config.bot_token, intents)
+            let mut client = Client::builder(&profile.bot_token, intents)
                 .event_handler(ServeHandler {
-                    config: config.clone(),
-                    target: cli.target.clone(),
+                    profile: profile.clone(),
                 })
                 .await?;
 
@@ -670,7 +701,20 @@ mod tests {
     fn test_cli_parsing_serve() {
         let cli = Cli::try_parse_from(["opencb", "serve"]).unwrap();
         match cli.command {
-            Some(Commands::Serve) => (),
+            Some(Commands::Serve { profile }) => {
+                assert_eq!(profile, "default");
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_parsing_serve_with_profile() {
+        let cli = Cli::try_parse_from(["opencb", "serve", "--profile", "work"]).unwrap();
+        match cli.command {
+            Some(Commands::Serve { profile }) => {
+                assert_eq!(profile, "work");
+            }
             _ => panic!("Expected Serve command"),
         }
     }
@@ -778,5 +822,121 @@ mod tests {
     #[test]
     fn test_process_message_empty() {
         assert_eq!(process_message_content(""), "");
+    }
+
+    // ── Config / Profile tests ──
+
+    #[test]
+    fn test_config_with_profiles_loads() {
+        let toml_str = r##"
+debug = true
+
+[profiles.default]
+profile_id = "default"
+channel_type = "discord"
+channel_ids = ["*"]
+bot_token = "test-token-123"
+
+  [profiles.default.targets]
+  [profiles.default.targets.echo]
+  cmd = "echo"
+  argv = ["#INPUT#"]
+"##;
+        let raw: toml::Value = toml::from_str(toml_str).unwrap();
+        assert!(raw.get("profiles").is_some());
+        let profiles = raw.get("profiles").unwrap().as_table().unwrap();
+        assert!(profiles.contains_key("default"));
+    }
+
+    #[test]
+    fn test_config_fallback_without_profiles() {
+        let toml_str = r##"
+bot_token = "fallback-token"
+channel_id = ["111", "222"]
+debug = false
+
+[opencode]
+cmd = "opencode"
+argv = ["run", "#INPUT#"]
+"##;
+        let raw: toml::Value = toml::from_str(toml_str).unwrap();
+        assert!(raw.get("profiles").is_none());
+        assert!(raw.get("bot_token").is_some());
+    }
+
+    #[test]
+    fn test_profile_name_validation_valid() {
+        assert!(config::is_valid_name("default"));
+        assert!(config::is_valid_name("work-bot"));
+        assert!(config::is_valid_name("ai_v2"));
+        assert!(config::is_valid_name("cmd1"));
+    }
+
+    #[test]
+    fn test_profile_name_validation_invalid() {
+        assert!(!config::is_valid_name("my bot"));
+        assert!(!config::is_valid_name("cmd!"));
+        assert!(!config::is_valid_name("UPPER"));
+        assert!(!config::is_valid_name(""));
+    }
+
+    #[test]
+    fn test_profile_is_wildcard() {
+        let profile = config::Profile {
+            profile_id: "test".to_string(),
+            channel_type: "discord".to_string(),
+            channel_ids: vec!["*".to_string()],
+            bot_token: "token".to_string(),
+            targets: std::collections::HashMap::new(),
+        };
+        assert!(profile.is_wildcard());
+    }
+
+    #[test]
+    fn test_profile_not_wildcard() {
+        let profile = config::Profile {
+            profile_id: "test".to_string(),
+            channel_type: "discord".to_string(),
+            channel_ids: vec!["123".to_string(), "456".to_string()],
+            bot_token: "token".to_string(),
+            targets: std::collections::HashMap::new(),
+        };
+        assert!(!profile.is_wildcard());
+    }
+
+    #[test]
+    fn test_profile_channel_ids_u64() {
+        let profile = config::Profile {
+            profile_id: "test".to_string(),
+            channel_type: "discord".to_string(),
+            channel_ids: vec!["123".to_string(), "456".to_string()],
+            bot_token: "token".to_string(),
+            targets: std::collections::HashMap::new(),
+        };
+        assert_eq!(profile.channel_ids_u64(), vec![123, 456]);
+    }
+
+    #[test]
+    fn test_profile_channel_ids_u64_wildcard() {
+        let profile = config::Profile {
+            profile_id: "test".to_string(),
+            channel_type: "discord".to_string(),
+            channel_ids: vec!["*".to_string()],
+            bot_token: "token".to_string(),
+            targets: std::collections::HashMap::new(),
+        };
+        assert_eq!(profile.channel_ids_u64(), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn test_slash_command_validation() {
+        // Valid names
+        assert!(handler::is_valid_command_name("echo"));
+        assert!(handler::is_valid_command_name("my-cmd"));
+        assert!(handler::is_valid_command_name("cmd_1"));
+        // Invalid names
+        assert!(!handler::is_valid_command_name("my cmd"));
+        assert!(!handler::is_valid_command_name("cmd!"));
+        assert!(!handler::is_valid_command_name(""));
     }
 }
