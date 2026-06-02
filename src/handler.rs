@@ -1,22 +1,45 @@
 //! 🤖 Discord 事件處理模組
 //! 實作 EventHandler trait，處理訊息同就緒事件 ✨
 
-use serenity::all::{Context, EventHandler, Message, Ready};
+use serenity::all::{
+    Context, CreateInteractionResponse, CreateInteractionResponseMessage,
+    EventHandler, Interaction, Message, Ready,
+};
 use serenity::async_trait;
-use std::env;
-use tokio::process::Command;
 use tracing::{error, info, warn};
 
-use crate::config::{Config, TargetSpec};
+use crate::config::Profile;
 use crate::inbound::extract_message_metadata;
 use crate::outbound::send_message_to_channel;
-use crate::types::MessageMetadata;
+use crate::slash_commands::{self, CommandContext};
 
 /// 🤖 Serve 模式 handler
-/// 內含 config（用嚟攞 targets）同 target name（CLI 啟動時指定）
+/// 內含 profile（用嚟攞 bot_token, channel_ids, targets）
 pub struct ServeHandler {
-    pub config: Config,
-    pub target: Option<String>,
+    pub profile: Profile,
+}
+
+/// Validate command name matches ^[a-z0-9_-]+$
+pub fn is_valid_command_name(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
+/// Build a CommandContext from a text-based message and parsed args.
+fn build_context_from_message(msg_metadata: crate::types::MessageMetadata, args: &str) -> CommandContext {
+    CommandContext {
+        args: args.to_string(),
+        message: msg_metadata,
+    }
+}
+
+/// Send an ephemeral "Invalid command" response to an interaction.
+async fn respond_invalid_command(ctx: &Context, interaction: &serenity::all::CommandInteraction) {
+    let resp = CreateInteractionResponse::Message(
+        CreateInteractionResponseMessage::new()
+            .ephemeral(true)
+            .content("Invalid command"),
+    );
+    let _ = interaction.create_response(&ctx.http, resp).await;
 }
 
 #[async_trait]
@@ -25,48 +48,29 @@ impl EventHandler for ServeHandler {
         // 🚫 唔處理自己發嘅訊息，避免無限循環
         let current_user_id = ctx.cache.current_user().id;
         if msg.author.id == current_user_id {
+            info!("🚫 Ignored: message from bot itself (id={})", msg.id);
             return;
         }
 
-        // ➕ 只處理有提及 bot id 嘅 Guild 訊息；若冇提及就忽略
-        // For guild messages require an explicit mention of the bot.
+        // 📡 Channel filtering: DM always accepted; Guild check channel_ids
         if msg.guild_id.is_some() {
-            let mentioned_bot = msg.mentions.iter().any(|u| u.id == current_user_id);
-            if !mentioned_bot {
-                // Not mentioning the bot -> ignore
-                return;
-            }
-        } else {
-            // 🔒 Direct message (DM) path: verify we can open a DM channel with the user
-            // If we cannot create/open a DM channel (e.g. blocked or privacy settings), skip processing.
-            if let Err(e) = msg.author.create_dm_channel(&ctx.http).await {
-                warn!(
-                    "⚠️ Cannot open DM channel with user {}: {}",
-                    msg.author.id, e
-                );
-                return;
+            // Guild message — check channel_ids unless wildcard
+            if !self.profile.is_wildcard() {
+                let channel_id_str = msg.channel_id.get().to_string();
+                if !self.profile.channel_ids.contains(&channel_id_str) {
+                    info!(
+                        "🚫 Ignored: channel {} not in allowed list {:?} (msg={})",
+                        channel_id_str, self.profile.channel_ids, msg.id
+                    );
+                    return;
+                }
             }
         }
 
-        // Extract metadata and then strip the explicit bot mention from the message content
-        let mut metadata: MessageMetadata = extract_message_metadata(&ctx, &msg);
+        // 📝 Extract metadata from the message
+        let metadata = extract_message_metadata(&ctx, &msg);
 
-        // Remove explicit mention tokens for this bot: <@123...> and <@!123...>
-        let bot_id_str = current_user_id.to_string();
-        metadata.content = metadata
-            .content
-            .replace(&format!("<@{}>", bot_id_str), "")
-            .replace(&format!("<@!{}>", bot_id_str), "");
-
-        // Normalize whitespace: preserve line breaks but collapse multiple spaces within lines
-        metadata.content = metadata
-            .content
-            .lines()
-            .map(|line| line.split_whitespace().collect::<Vec<&str>>().join(" "))
-            .collect::<Vec<String>>()
-            .join("\n");
-
-        // 📝 照常輸出 JSON metadata 到 stdout
+        // 📝 Output JSON metadata to stdout
         match serde_json::to_string_pretty(&metadata) {
             Ok(json) => {
                 println!("\n========== 📨 New Message ==========");
@@ -78,121 +82,143 @@ impl EventHandler for ServeHandler {
             }
         }
 
-        // 🎯 如果有指定 target，就調用外部 CLI
-        let target_name = match &self.target {
-            Some(t) => t,
-            None => return, // 冇 target 就保持原行為（淨係輸出 JSON）
+        // 🔍 Only process messages starting with "/"
+        let content = metadata.content.clone();
+        let content = content.trim();
+        if !content.starts_with('/') {
+            info!(
+                "🚫 Ignored: message without '/' prefix (msg={}, author={})",
+                msg.id, metadata.author.name
+            );
+            return;
+        }
+
+        // 🔍 Validate command name format
+        let after_slash = &content[1..]; // remove leading '/'
+        let (cmd_name, args) = match after_slash.split_once(char::is_whitespace) {
+            Some((name, rest)) => (name, rest.trim()),
+            None => (after_slash, ""),
         };
 
-        let spec = match self.config.targets.get(target_name) {
-            Some(s) => s.clone(),
-            None => {
-                error!(
-                    "❌ Target '{}' 喺 config.toml 入面搵唔到，請檢查 [target] table",
-                    target_name
-                );
-                return;
+        if !is_valid_command_name(cmd_name) {
+            info!("🚫 Invalid command name format: '{}'", cmd_name);
+            let _ = send_message_to_channel(&ctx, msg.channel_id.get(), "Invalid command").await;
+            return;
+        }
+
+        // 🔎 Find and execute command with context
+        match slash_commands::find(cmd_name) {
+            Some(command) => {
+                let cmd_ctx = build_context_from_message(metadata, args);
+                let output = command.execute(&cmd_ctx);
+                if output.is_empty() {
+                    warn!("⚠️ Slash command '{}' returned empty output", cmd_name);
+                    return;
+                }
+                let channel_id = msg.channel_id.get();
+                info!("✅ Slash command '{}' executed, replying to channel {}", cmd_name, channel_id);
+                send_message_to_channel(&ctx, channel_id, &output).await;
             }
+            None => {
+                info!("🚫 Unknown slash command: '{}'", cmd_name);
+                let _ = send_message_to_channel(&ctx, msg.channel_id.get(), "Invalid command").await;
+            }
+        }
+    }
+
+    async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        // Only handle chat input (slash) commands
+        let command = match interaction {
+            Interaction::Command(cmd) => cmd,
+            _ => return,
         };
 
-        let channel_id = msg.channel_id.get();
-        let input = metadata.content.clone();
-        let label = target_name.clone();
+        let cmd_name = command.data.name.clone();
+        info!("📨 Native slash command interaction: /{} from user {}", cmd_name, command.user.id);
 
-        // 🚀 喺 spawn 入面執行，避免阻塞 event loop
-        tokio::spawn(async move {
-            run_target_and_reply(ctx, channel_id, label, spec, input).await;
-        });
+        // Validate command name format
+        if !is_valid_command_name(&cmd_name) {
+            info!("🚫 Invalid command name format: '{}'", cmd_name);
+            respond_invalid_command(&ctx, &command).await;
+            return;
+        }
+
+        // Build args string from interaction options
+        let args = command
+            .data
+            .options
+            .iter()
+            .filter_map(|opt| match &opt.value {
+                serenity::all::CommandDataOptionValue::String(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // Find and execute command
+        match slash_commands::find(&cmd_name) {
+            Some(command_impl) => {
+                // Build minimal MessageMetadata for context
+                let msg_metadata = crate::types::MessageMetadata {
+                    id: command.id.to_string(),
+                    content: format!("/{} {}", cmd_name, args),
+                    created_at: None,
+                    author: crate::types::AuthorMetadata {
+                        id: command.user.id.to_string(),
+                        name: command.user.name.clone(),
+                        bot: false,
+                    },
+                    channel: crate::types::ChannelMetadata {
+                        id: command.channel_id.to_string(),
+                        name: None,
+                        channel_type: "Unknown".to_string(),
+                    },
+                    guild: command.guild_id.map(|g| crate::types::GuildMetadata {
+                        id: g.to_string(),
+                        name: "Unknown".to_string(),
+                    }),
+                    mentions: crate::types::MentionsMetadata {
+                        users: vec![],
+                        everyone: false,
+                    },
+                    attachments: vec![],
+                    embeds_count: 0,
+                    pinned: false,
+                    webhook_id: None,
+                };
+
+                let cmd_ctx = CommandContext {
+                    args,
+                    message: msg_metadata,
+                };
+
+                let output = command_impl.execute(&cmd_ctx);
+                if output.is_empty() {
+                    warn!("⚠️ Slash command '{}' returned empty output", cmd_name);
+                    return;
+                }
+
+                let resp = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().content(&output),
+                );
+                if let Err(e) = command.create_response(&ctx.http, resp).await {
+                    error!("❌ Failed to respond to /{} interaction: {}", cmd_name, e);
+                } else {
+                    info!("✅ Slash command '{}' interaction responded", cmd_name);
+                }
+            }
+            None => {
+                info!("🚫 Unknown slash command: '{}'", cmd_name);
+                respond_invalid_command(&ctx, &command).await;
+            }
+        }
     }
 
     async fn ready(&self, ctx: Context, data_about_bot: Ready) {
         info!("✅ Bot is ready! Logged in as {}", data_about_bot.user.name);
-        if let Some(t) = &self.target {
-            info!("🎯 Active target: {}", t);
-        }
+        info!("🎯 Active profile: {}", self.profile.profile_id);
 
-        if let Ok(channel_id_str) = env::var("CHANNEL_ID") {
-            // Accept comma-separated list or single ID; prefer first valid u64
-            let first_valid = channel_id_str
-                .split(',')
-                .filter_map(|s| s.trim().parse::<u64>().ok())
-                .next();
-            if let Some(channel_id) = first_valid {
-                let test_message =
-                    format!("🚀 Bot {} is online and ready!", data_about_bot.user.name);
-                send_message_to_channel(&ctx, channel_id, &test_message).await;
-                info!("✅ Startup message sent to channel {}", channel_id);
-            } else {
-                error!("❌ Invalid CHANNEL_ID format: {}", channel_id_str);
-            }
-        }
+        // Register slash commands with Discord API
+        slash_commands::register_all_commands(&ctx.http, data_about_bot.user.id).await;
     }
-}
-
-/// 🛠️ 執行 target CLI 並將 stdout 回覆到 Discord channel
-async fn run_target_and_reply(
-    ctx: Context,
-    channel_id: u64,
-    target_label: String,
-    spec: TargetSpec,
-    input: String,
-) {
-    info!("🎯 Target '{}' 接收到訊息，準備執行 CLI", target_label);
-    // 🔁 將 #INPUT# 取代成訊息內容
-    let args: Vec<String> = spec
-        .argv
-        .iter()
-        .map(|a| a.replace("#INPUT#", &input))
-        .collect();
-
-    info!(
-        "🚀 執行 target CLI: cmd={} argv={:?} work_dir={:?}",
-        spec.cmd, args, spec.work_dir
-    );
-
-    let mut cmd = Command::new(&spec.cmd);
-    cmd.args(&args);
-    if let Some(dir) = &spec.work_dir {
-        cmd.current_dir(dir);
-    }
-
-    let output = match cmd.output().await {
-        Ok(o) => o,
-        Err(e) => {
-            error!("❌ 執行 target CLI 失敗: {}", e);
-            let _ = send_message_to_channel(&ctx, channel_id, &format!("⚠️ 執行 CLI 失敗: {}", e))
-                .await;
-            return;
-        }
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    if !output.status.success() {
-        error!(
-            "❌ Target CLI 執行失敗 exit={:?} stderr={}",
-            output.status.code(),
-            stderr
-        );
-        let reply = format!(
-            "⚠️ CLI exit={:?}\n```\n{}\n```",
-            output.status.code(),
-            &stderr
-        );
-        send_message_to_channel(&ctx, channel_id, &reply).await;
-        return;
-    }
-
-    let trimmed = stdout.trim();
-    if trimmed.is_empty() {
-        warn!("⚠️ Target CLI stdout 為空，唔回覆");
-        return;
-    }
-
-    info!(
-        "✅ Target CLI 完成，回覆到 channel {}",
-        channel_id
-    );
-    send_message_to_channel(&ctx, channel_id, trimmed).await;
 }

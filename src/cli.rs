@@ -25,7 +25,11 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// 🌐 啟動 Discord bot 服務
-    Serve,
+    Serve {
+        /// 🎯 Profile ID to use (default: "default")
+        #[arg(long = "profile", default_value = "default")]
+        profile: String,
+    },
 
     /// 💬 發送一條消息（支援多個詞語自動拼接）
     Send {
