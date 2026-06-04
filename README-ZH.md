@@ -80,12 +80,36 @@ opencb --config /path/to/your/config.toml send "Hello"
 ```
 
 ### 配置檔說明（~/.config/opencb/config.toml）
+
+OpenCB 使用 **Profile（設定檔）** 格式。每個 profile 有自己的 token、頻道篩選、同發送目標。
+
 ```toml
-bot_token = "你嘅_Discord_Bot_Token"
-channel_id = 123456789012345678  # 頻道 ID
-owner_id = None                   # 可選：擁有者 ID
-debug = true                       # 可選：是否開啟 debug 日誌
+debug = false
+
+[profiles.default]
+profile_id = "default"
+channel_type = "discord"
+
+# channel_ids：serve 模式監聽哪些頻道。
+# 用 ["*"] 表示接受任何頻道嘅訊息。
+channel_ids = ["*"]
+
+bot_token = "YOUR_BOT_TOKEN_HERE"
+
+# default_send_to_channel_ids：send 命令發送到哪些頻道。
+# 必須填具體 ID，唔可以用萬用字元 "*"。
+default_send_to_channel_ids = ["123456789012345678"]
+
+[profiles.default.targets.opencode]
+cmd = "opencode"
+argv = ["run", "#INPUT#"]
+# work_dir = "/path/to/workdir"  # 可選
 ```
+
+> **注意：** `channel_ids = ["*"]` 喺 serve 模式表示「接受任何頻道」。
+> `send` 命令必須透過 `default_send_to_channel_ids` 或 `--rc` 指定具體頻道 ID。
+
+> **向後兼容：** 舊版平坦格式（頂層 `bot_token` / `channel_id`）仍然有效，但建議使用上面嘅 profiles 格式。
 
 ## 🎯 新功能：外部 CLI 目標（chat-with-cli）
 
@@ -115,26 +139,45 @@ opencb opencode
 > ⚠️ **重要**：去 https://discord.com/developers/applications 創建應用，添加 Bot，複製 Token 填到 `~/.config/opencb/config.toml`
 
 ### 命令一：發送訊息（Send 模式）
+
 ```bash
-# 發送一條訊息到配置檔入面指定嘅頻道
+# 發送到 default profile 嘅 default_send_to_channel_ids 所指定嘅頻道
 opencb send "Hello World 🎉"
 
-# 發送多個單詞
-opencb send "呢係一條測試訊息" "第二部份" "第三部份"
+# 多個單詞自動拼接（唔需要引號）
+opencb send 你好 世界 測試訊息
+
+# 覆蓋目標頻道（呢次只用 --rc 指定嘅頻道）
+opencb send "Hello" --rc "123456789012345678"
+
+# 使用指定 profile（唔係 default）
+opencb send "Hello" --profile myprofile
+
+# 以 DM 方式發送畀指定用戶
+opencb send "Hello" --ru "111222333444555666"
+
+# 喺訊息尾部加入 @mention
+opencb send "上線咗！" --mu "111222333444555666,999888777666555444"
+
+# 組合使用 —— 覆蓋頻道同加 mention
+opencb send "完成部署" --rc "123456789012345678" --mu "111222333444555666"
 ```
 
 特點：
 - ✅ 用 HTTP API，唔使連接 Gateway
 - ✅ 發完即退出，適合腳本調用
-- ✅ 唔使長期運行
+- ✅ `--rc` 覆蓋 `default_send_to_channel_ids`，只影響呢次發送
+- ✅ `--ru` 以 DM 方式發送
+- ✅ `--mu` 喺訊息尾部加入 `<@id>` mention
 
 ### 命令二：啟動 Bot（Serve 模式）
-```bash
-# 方式一：直接執行（預設 serve）
-opencb
 
-# 方式二：明確指定 serve
+```bash
+# 用 default profile 啟動
 opencb serve
+
+# 用指定 profile 啟動
+opencb serve --profile myprofile
 
 # 可選：指定自定義配置檔路徑
 opencb -c /path/to/config.toml serve
@@ -144,6 +187,17 @@ opencb -c /path/to/config.toml serve
 - 🔄 持續運行，監聽所有訊息
 - 📊 將訊息元數據以 JSON 格式輸出到 stdout
 - 📝 適合管道到其他工具或日誌系統
+- 🎯 根據 profile 嘅 `channel_ids` 篩選頻道（`["*"]` = 所有頻道）
+
+### 原生 Slash 命令
+
+Bot 啟動時會自動向 Discord 註冊 slash 命令：
+
+| 命令 | 說明 |
+|------|------|
+| `/echo <文字>` | 原樣回覆輸入嘅文字，保留格式 |
+
+Slash 命令喺 Bot 啟動後即時出現喺 Discord 嘅 `/` 自動補全選單，唔需要手動註冊。
 
 ### 完整命令列表
 ```bash
@@ -164,37 +218,47 @@ opencb --help
 ## 📁 項目結構
 
 ```
-delivery/dev/
+opencb/
 ├── 📄 Cargo.toml              # 項目配置、依賴定義
 ├── 🔒 Cargo.lock              # 依賴版本鎖定
-├── 📖 README.md               # 項目說明（本檔案）
-├── ⚖️ LICENSE                # 許可證
+├── 📖 README.md               # 項目說明（英文）
+├── 📖 README-ZH.md            # 項目說明（本檔案）
+├── ⚖️  LICENSE                # 許可證
 ├── 🚫 .gitignore              # Git 忽略規則
+├── ⚙️  config.sample.toml     # 配置範例檔
 ├── 📂 src/
-│   ├── 🚀 main.rs            # 主程序入口（159行）
-│   ├── 📊 types.rs           # 訊息元數據類型定義（66行）
-│   ├── ⚙️ config.rs          # 配置處理模組（80行）
-│   ├── 🎯 cli.rs             # 命令行參數解析（31行）
-│   ├── 🚨 error.rs           # Discord 錯誤處理（36行）
-│   ├── 📤 outbound.rs        # 出站訊息發送（20行）
-│   ├── 📥 inbound.rs         # 入站訊息處理（75行）
-│   └── 🤖 handler.rs        # Discord 事件處理（57行）
-└── 📂 docs/
-    ├── 📖 README.md          # 呢個檔案
-    └── 🔬 TECH.md            # 技術細節文檔
+│   ├── 🚀 main.rs             # 主程序入口
+│   ├── 📊 types.rs            # 訊息元數據類型定義
+│   ├── ⚙️  config.rs          # 配置處理模組
+│   ├── 🎯 cli.rs              # 命令行參數解析
+│   ├── 🚨 error.rs            # Discord 錯誤處理
+│   ├── 📤 outbound.rs         # 出站訊息發送
+│   ├── 📥 inbound.rs          # 入站訊息元數據提取
+│   ├── 🤖 handler.rs          # Discord 事件處理（訊息 + interaction）
+│   ├── ✂️  splitter.rs        # 長訊息分割
+│   ├── 🕐 scheduler.rs        # 排程訊息 job store
+│   └── 📂 slash_commands/
+│       ├── mod.rs             # Slash 命令登記、CommandContext、Discord 註冊
+│       └── echo.rs            # /echo 命令實作
+└── 📂 openspec/               # 變更管理 artifacts
 ```
 
 ### 模組說明
-| 模組 | 行數 | 職責 |
-|------|------|------|
-| `main.rs` | 159 | 🚀 程序入口，組裝各模組 |
-| `types.rs` | 66 | 📊 定義 MessageMetadata 等結構化類型 |
-| `config.rs` | 80 | ⚙️ 讀取、驗證、生成 ~/.config/opencb/config.toml |
-| `cli.rs` | 31 | 🎯 用 clap 解析 CLI 參數 |
-| `error.rs` | 36 | 🚨 處理 Discord 錯誤，提供用戶友好提示 |
-| `outbound.rs` | 20 | 📤 通過 Context 發送訊息 |
-| `inbound.rs` | 75 | 📥 從 Discord Message 提取元數據 |
-| `handler.rs` | 57 | 🤖 實作 EventHandler，處理訊息事件 |
+
+| 模組 | 職責 |
+|------|------|
+| `main.rs` | 🚀 程序入口，組裝各模組 |
+| `types.rs` | 📊 定義 `MessageMetadata` 等結構化類型 |
+| `config.rs` | ⚙️ 讀取、驗證、生成 `~/.config/opencb/config.toml` |
+| `cli.rs` | 🎯 用 clap 解析 CLI 參數（`serve`、`send` 子命令） |
+| `error.rs` | 🚨 處理 Discord 錯誤，提供用戶友好提示 |
+| `outbound.rs` | 📤 通過 serenity HTTP 發送訊息 |
+| `inbound.rs` | 📥 從 Discord `Message` 提取結構化元數據 |
+| `handler.rs` | 🤖 實作 `EventHandler`：訊息篩選、slash 命令路由、interaction 處理 |
+| `splitter.rs` | ✂️ 將長訊息分割成 ≤2000 字元嘅 Discord 安全區塊 |
+| `scheduler.rs` | 🕐 `send -t` 排程功能嘅 in-memory job store |
+| `slash_commands/mod.rs` | 🎯 `SlashCommand` trait、`CommandContext`、命令登記、Discord API 註冊 |
+| `slash_commands/echo.rs` | 💬 `/echo` 命令 — 原樣回覆 args |
 
 ## 🧪 測試
 
@@ -203,12 +267,7 @@ delivery/dev/
 cargo test
 
 # 預期輸出：
-# running 4 tests
-# test tests::test_cli_parsing_serve ... ok
-# test tests::test_cli_parsing_send ... ok
-# test tests::test_cli_parsing_default ... ok
-# test tests::test_message_metadata_serialization ... ok
-# test result: ok. 4 passed; 0 failed;
+# test result: ok. 49 passed; 0 failed; 0 ignored
 ```
 
 ## 📝 常見問題

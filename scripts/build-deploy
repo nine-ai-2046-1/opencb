@@ -1,2 +1,2 @@
-cargo build --release && cp ./target/release/opencb /Users/magicfuture/.local/bin/
+cargo build --release && cp ./target/release/opencb $HOME/.opens/
 

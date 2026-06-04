@@ -115,16 +115,37 @@ opencb -c /path/to/your/config.toml serve
 opencb --config /path/to/your/config.toml send "Hello"
 ```
 
-### Configuration File Description (~/.config/opencb/config.toml)
+### Configuration File (~/.config/opencb/config.toml)
+
+OpenCB uses a **profile-based** config format. Each profile holds its own token, channel filters, and send targets.
 
 ```toml
+debug = false
 
-bot_token = "Your_Discord_Bot_Token"
-channel_id = 123456789012345678 # Channel ID
-owner_id = None # Optional: Owner ID
-debug = true # Optional: Enable debug logging
+[profiles.default]
+profile_id = "default"
+channel_type = "discord"
 
+# channel_ids: which channels the bot LISTENS to in serve mode.
+# Use ["*"] to accept messages from any channel.
+channel_ids = ["*"]
+
+bot_token = "YOUR_BOT_TOKEN_HERE"
+
+# default_send_to_channel_ids: which channels the `send` command writes to.
+# Must be specific IDs — wildcards are not allowed here.
+default_send_to_channel_ids = ["123456789012345678"]
+
+[profiles.default.targets.opencode]
+cmd = "opencode"
+argv = ["run", "#INPUT#"]
+# work_dir = "/path/to/workdir"  # Optional
 ```
+
+> **Note:** `channel_ids = ["*"]` means "accept from any channel" in serve mode.
+> For the `send` command you must always provide specific IDs via `default_send_to_channel_ids` or `--rc`.
+
+> **Legacy format:** The old flat `bot_token` / `channel_id` top-level format is still accepted as a compatibility fallback, but the profiles format above is the recommended approach.
 
 ## 🎯 New Feature: External CLI Target (chat-with-cli)
 
@@ -168,49 +189,65 @@ Notes:
 ### Command 1: Send a message (Send mode)
 
 ```bash
-
-# Send a message to the channel specified in the configuration file
+# Send to channels defined in default_send_to_channel_ids of the default profile
 opencb send "Hello World 🎉"
 
-# Send multiple words
+# Multi-word message — no quotes needed, words are joined automatically
+opencb send Hello World this is a test
 
-opencb send "This is a test message" "Part 2" "Part 3"
+# Override target channel for this send only (--rc takes priority over config)
+opencb send "Hello" --rc "123456789012345678"
 
+# Use a specific profile instead of "default"
+opencb send "Hello" --profile myprofile
+
+# Send as a Direct Message to one or more users
+opencb send "Hello" --ru "111222333444555666"
+
+# Append user mentions at the end of the message
+opencb send "Heads up!" --mu "111222333444555666,999888777666555444"
+
+# Combine flags — override channel and append a mention
+opencb send "Release done" --rc "123456789012345678" --mu "111222333444555666"
 ```
 
 Features:
 
 - ✅ Uses HTTP API, no gateway connection required
-
 - ✅ Exits immediately after sending, suitable for script calls
-
-- ✅ Does not require long-term operation
+- ✅ `--rc` overrides `default_send_to_channel_ids` for a single invocation
+- ✅ `--ru` sends a DM instead of (or in addition to) channel messages
+- ✅ `--mu` appends `<@id>` mentions to the message text
 
 ### Command 2: Start the bot (Serve mode)
 
 ```bash
-
-# Method 1: Execute directly (default serve)
-
-opencb
-
-# Method 2: Explicitly specify serve
-
+# Start with the default profile
 opencb serve
 
-# Optional: Specify a custom configuration file path
+# Start with a specific profile
+opencb serve --profile myprofile
 
+# Optional: specify a custom config file path
 opencb -c /path/to/config.toml serve
-
 ```
 
 Features:
 
 - 🔄 Continuously runs, listening to all messages
-
 - 📊 Outputs message metadata to stdout in JSON format
-
 - 📝 Suitable for pipelining to other tools or logging systems
+- 🎯 Filters messages to channels listed in the profile's `channel_ids` (`["*"]` = all channels)
+
+### Native Slash Commands
+
+When the bot starts in serve mode, it automatically registers Discord slash commands:
+
+| Command | Description |
+|---------|-------------|
+| `/echo <text>` | Echoes the text back to the channel, preserving formatting |
+
+Slash commands appear in Discord's `/` autocomplete menu immediately after the bot starts. No manual registration needed.
 
 ### Full Command List
 
@@ -242,87 +279,56 @@ opencb --help
 ## 📁 Project Structure
 
 ```
-delivery/dev/
-
-├── 📄 Cargo.toml # Project configuration, dependency definitions
-
-├── 🔒 Cargo.lock # Dependency version locking
-
-├── 📖 README.md # Project description (this file)
-
-├── ⚖️ LICENSE # License
-
-├── 🚫 .gitignore # Git ignore rules
-
+opencb/
+├── 📄 Cargo.toml              # Project configuration, dependency definitions
+├── 🔒 Cargo.lock              # Dependency version locking
+├── 📖 README.md               # Project description (this file)
+├── 📖 README-ZH.md            # Project description (Cantonese)
+├── ⚖️  LICENSE                # License
+├── 🚫 .gitignore              # Git ignore rules
+├── ⚙️  config.sample.toml     # Sample configuration file
 ├── 📂 src/
-
-│ ├── 🚀 main.rs # Main program entry point (line 159)
-
-│ ├── 📊 types.rs # Message metadata type definitions (line 66)
-
-│ ├── ⚙️ config.rs # Configuration processing module (line 80)
-
-│ ├── 🎯 cli.rs # Command line argument parsing (line 31)
-
-│ ├── 🚨 error.rs # Discord error handling (line 36)
-
-│ ├── 📤 outbound.rs # Outbound message sending (line 20)
-
-│ ├── 📥 inbound.rs # Inbound message handling (line 75)
-
-│ └── 🤖 handler.rs # Discord event handling (line 57)
-
-└── 📂 docs/
-
-├── 📖 README.md # This file
-
-└── 🔬 TECH.md # Technical details document
-
+│   ├── 🚀 main.rs             # Main program entry point
+│   ├── 📊 types.rs            # Message metadata type definitions
+│   ├── ⚙️  config.rs          # Configuration processing module
+│   ├── 🎯 cli.rs              # Command line argument parsing
+│   ├── 🚨 error.rs            # Discord error handling
+│   ├── 📤 outbound.rs         # Outbound message sending
+│   ├── 📥 inbound.rs          # Inbound message metadata extraction
+│   ├── 🤖 handler.rs          # Discord event handling (message + interaction)
+│   ├── ✂️  splitter.rs        # Long message splitting
+│   ├── 🕐 scheduler.rs        # Scheduled message job store
+│   └── 📂 slash_commands/
+│       ├── mod.rs             # Slash command registry, CommandContext, registration
+│       └── echo.rs            # /echo command implementation
+└── 📂 openspec/               # Change management artifacts
 ```
 
 ### Module Description
 
-| Module | Line Number | Responsibility |
-
-|------|------|------|
-
-| `main.rs` | 159 | 🚀 Program entry point, assembling various modules |
-
-| `types.rs` | 66 | 📊 Define structured types such as MessageMetadata |
-
-| `config.rs` | 80 | ⚙️ Read, validate, and generate ~/.config/opencb/config.toml |
-
-| `cli.rs` | 31 | 🎯 Parse CLI parameters using clap |
-
-| `error.rs` | 36 | 🚨 Handle Discord errors and provide user-friendly prompts |
-
-| `outbound.rs` | 20 | 📤 Send messages via Context |
-
-| `inbound.rs` | 75 | 📥 Extract metadata from Discord Messages |
-
-| `handler.rs` | 57 | 🤖 Implement EventHandler to handle message events |
+| Module | Responsibility |
+|--------|----------------|
+| `main.rs` | 🚀 Program entry point, wires all modules together |
+| `types.rs` | 📊 Defines `MessageMetadata` and related structs |
+| `config.rs` | ⚙️ Reads, validates, and generates `~/.config/opencb/config.toml` |
+| `cli.rs` | 🎯 Parses CLI arguments using clap (`serve`, `send` subcommands) |
+| `error.rs` | 🚨 Handles Discord errors with user-friendly messages |
+| `outbound.rs` | 📤 Sends messages via serenity HTTP |
+| `inbound.rs` | 📥 Extracts structured metadata from Discord `Message` objects |
+| `handler.rs` | 🤖 Implements `EventHandler`: message filter, slash command routing, interaction handler |
+| `splitter.rs` | ✂️ Splits long messages into ≤2000-char Discord-safe chunks |
+| `scheduler.rs` | 🕐 In-memory scheduled job store for `send -t` |
+| `slash_commands/mod.rs` | 🎯 `SlashCommand` trait, `CommandContext`, command registry, Discord API registration |
+| `slash_commands/echo.rs` | 💬 `/echo` command — echoes args verbatim |
 
 ## 🧪 Testing
 
 ```bash
-
 # Run all tests
 cargo test
 
 # Expected output:
-
-# running 4 tests
-
-# test tests::test_cli_parsing_serve ... ok
-
-# test tests::test_cli_parsing_send ... ok
-
-# test tests::test_cli_parsing_default ... ok
-
-# test tests::test_message_metadata_serialization ... ok
-
-# test result: ok. 4 passed; 0 failed;
-
+# test result: ok. 49 passed; 0 failed; 0 ignored
 ```
 
 ## 📝 Frequently Asked Questions

@@ -16,6 +16,7 @@ pub struct CommandContext {
     /// The raw arguments string after the command name.
     pub args: String,
     /// Full message metadata (author, channel, guild, attachments, etc.).
+    #[allow(dead_code)]
     pub message: MessageMetadata,
 }
 
@@ -53,7 +54,7 @@ pub fn all_commands() -> Vec<Box<dyn SlashCommand>> {
 
 /// Register all slash commands with Discord's API.
 /// Called once on bot startup from `ready()` event.
-pub async fn register_all_commands(http: &Http, app_id: UserId) {
+pub async fn register_all_commands(http: &Http, _app_id: UserId) {
     for cmd in all_commands() {
         let builder = serenity::builder::CreateCommand::new(cmd.name())
             .description(cmd.description());

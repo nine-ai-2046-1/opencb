@@ -36,6 +36,9 @@ pub struct Profile {
     pub channel_ids: Vec<String>,
     /// Discord bot token
     pub bot_token: String,
+    /// 🎯 用嚟 send 嘅預設頻道 ID 列表（唔可以係 "*" 或空）
+    #[serde(default)]
+    pub default_send_to_channel_ids: Vec<String>,
     /// Profile 獨立嘅 Target CLI map
     #[serde(default, skip)]
     pub targets: HashMap<String, TargetSpec>,
@@ -48,6 +51,7 @@ fn default_channel_type() -> String {
 impl Profile {
     /// Parse channel_ids into u64 values. Invalid entries are ignored.
     /// Returns empty Vec if wildcard "*" is present.
+    #[allow(dead_code)]
     pub fn channel_ids_u64(&self) -> Vec<u64> {
         if self.channel_ids.iter().any(|s| s == "*") {
             return Vec::new();
@@ -61,6 +65,15 @@ impl Profile {
     /// Check if this profile accepts all channels (wildcard mode).
     pub fn is_wildcard(&self) -> bool {
         self.channel_ids.iter().any(|s| s == "*")
+    }
+
+    /// Get default send channel IDs for the send command.
+    /// Returns parsed u64 IDs if configured, empty Vec otherwise.
+    pub fn default_send_channel_ids_u64(&self) -> Vec<u64> {
+        self.default_send_to_channel_ids
+            .iter()
+            .filter_map(|s| s.parse::<u64>().ok())
+            .collect()
     }
 }
 
@@ -80,6 +93,7 @@ pub struct Config {
     pub debug: Option<bool>,
     /// 🎯 Target CLI map（fallback，向後兼容舊格式）
     #[serde(default, skip)]
+    #[allow(dead_code)]
     pub targets: HashMap<String, TargetSpec>,
     /// Admin HTTP server bind address for scheduling admin endpoint (e.g. "127.0.0.1:19001")
     #[serde(default)]
@@ -88,6 +102,7 @@ pub struct Config {
 
 impl Config {
     /// Try to parse channel_id strings into u64 values. Invalid entries are ignored.
+    #[allow(dead_code)]
     pub fn channel_ids_u64(&self) -> Vec<u64> {
         self.channel_id
             .iter()
@@ -189,6 +204,23 @@ fn validate_profile(name: &str, profile: &Profile) -> Result<(), Box<dyn std::er
             "Profile '{}' channel_ids: '*' must be the only element when used",
             name
         ).into());
+    }
+    // Validate default_send_to_channel_ids: must not contain "*" or be empty if present
+    if !profile.default_send_to_channel_ids.is_empty() {
+        if profile.default_send_to_channel_ids.iter().any(|s| s == "*") {
+            return Err(format!(
+                "Profile '{}' default_send_to_channel_ids must not contain '*'",
+                name
+            ).into());
+        }
+        for id in &profile.default_send_to_channel_ids {
+            if id.parse::<u64>().is_err() {
+                return Err(format!(
+                    "Profile '{}' default_send_to_channel_ids contains invalid ID: '{}'",
+                    name, id
+                ).into());
+            }
+        }
     }
     Ok(())
 }
@@ -304,6 +336,12 @@ pub fn load_config(config_path: Option<&str>) -> Result<Config, Box<dyn std::err
                         .unwrap_or("")
                         .to_string();
 
+                    // Parse default_send_to_channel_ids from the profile's table
+                    let default_send_to_channel_ids = match tbl.get("default_send_to_channel_ids") {
+                        Some(v) => parse_channel_ids(v),
+                        None => Vec::new(),
+                    };
+
                     // Parse targets from the profile's table
                     let targets = parse_targets(&toml::Value::Table(tbl.clone()))?;
 
@@ -312,6 +350,7 @@ pub fn load_config(config_path: Option<&str>) -> Result<Config, Box<dyn std::err
                         channel_type,
                         channel_ids,
                         bot_token: profile_bot_token,
+                        default_send_to_channel_ids,
                         targets,
                     };
 
@@ -350,6 +389,7 @@ pub fn load_config(config_path: Option<&str>) -> Result<Config, Box<dyn std::err
                 channel_id_vec.clone()
             },
             bot_token: bot_token.clone(),
+            default_send_to_channel_ids: Vec::new(),
             targets: fallback_targets.clone(),
         };
 

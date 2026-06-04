@@ -5,9 +5,13 @@ debug = false
 [profiles.default]
 profile_id = "default"
 channel_type = "discord"
-channel_ids = ["*"]  # or specific IDs: ["123", "456"]
+channel_ids = ["*"]  # serve mode: ["*"] = any channel, or specific IDs: ["123", "456"]
 bot_token = "YOUR_BOT_TOKEN_HERE"
+# default_send_to_channel_ids: channels the `send` command writes to. Must not be "*".
+# default_send_to_channel_ids = ["123456789012345678"]
 
 [profiles.default.targets.opencode]
 cmd = "opencode"
 argv = ["run", "#INPUT#"]
+# work_dir = "/tmp"
+

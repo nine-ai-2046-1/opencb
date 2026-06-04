@@ -284,15 +284,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ✅ 及早檢查：如果 CLI 啟動時指定咗 target，立即驗證 profile 裡面有無該 target
     // (Target validation is now per-profile; defer to serve command resolution)
-    // For Send command, validate against default profile
-    if let Some(Commands::Send { .. }) = &cli.command {
+    // For Send command, validate against specified profile
+    if let Some(Commands::Send { profile, .. }) = &cli.command {
         if let Some(ref target_name) = cli.target {
-            let default_profile = config.profiles.get("default");
-            if let Some(profile) = default_profile {
-                if !profile.targets.contains_key(target_name) {
+            let send_profile = config.profiles.get(profile);
+            if let Some(p) = send_profile {
+                if !p.targets.contains_key(target_name) {
                     eprintln!(
-                        "❌ Target '{}' not found in default profile targets",
-                        target_name
+                        "❌ Target '{}' not found in profile '{}' targets",
+                        target_name, profile
                     );
                     std::process::exit(1);
                 }
@@ -313,13 +313,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             message,
             time,
             date,
+            profile,
             rc,
             ru,
             mu,
         }) => {
-            // Resolve default profile for Send command
-            let send_profile = config.profiles.get("default").cloned().unwrap_or_else(|| {
-                eprintln!("❌ No 'default' profile found in config.toml");
+            // Resolve profile for Send command
+            let send_profile = config.profiles.get(&profile).cloned().unwrap_or_else(|| {
+                eprintln!(
+                    "❌ Profile '{}' not found in config.toml. Available profiles: {:?}",
+                    profile,
+                    config.profiles.keys().collect::<Vec<_>>()
+                );
                 std::process::exit(1);
             });
             // Extract flags and cleaned message
@@ -395,16 +400,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // 直接用 HTTP API - 唔需要 Gateway/event loop 🚀
             let http = serenity::http::Http::new(&send_profile.bot_token);
-            // For CLI 'send' allow overriding target channels via -c; accepts comma-separated ids.
-            // Resolve final channel list (rc overrides config channel list)
-            let override_channel_ids: Vec<u64> = rc
-                .as_ref()
-                .map(|s| {
-                    s.split(',')
-                        .filter_map(|x| x.trim().parse::<u64>().ok())
-                        .collect()
-                })
-                .unwrap_or_else(|| send_profile.channel_ids_u64());
+            // For CLI 'send' allow overriding target channels via --rc; accepts comma-separated ids.
+            // Priority: --rc flag > default_send_to_channel_ids > error
+            let override_channel_ids: Vec<u64> = if let Some(rc_str) = rc.as_ref() {
+                // --rc flag takes priority
+                rc_str.split(',')
+                    .filter_map(|x| x.trim().parse::<u64>().ok())
+                    .collect()
+            } else if !send_profile.default_send_to_channel_ids.is_empty() {
+                // Use profile's default_send_to_channel_ids
+                send_profile.default_send_channel_ids_u64()
+            } else {
+                // No channels configured
+                Vec::new()
+            };
 
             // Append mentions if provided (mu)
             let full_msg = if let Some(mu_str) = mu {
@@ -444,7 +453,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Send to all resolved channels
             if override_channel_ids.is_empty() {
-                eprintln!("❌ No channel configured in config.toml (channel_id is empty) and no --rc provided. Set channel_id to a list like [\"123\"] or pass --rc.");
+                if send_profile.default_send_to_channel_ids.is_empty() {
+                    eprintln!(
+                        "❌ No send channels configured for profile '{}'. Set 'default_send_to_channel_ids' in config.toml or use --rc.",
+                        send_profile.profile_id
+                    );
+                } else {
+                    eprintln!(
+                        "❌ Invalid send channels in profile '{}'. Check 'default_send_to_channel_ids' values.",
+                        send_profile.profile_id
+                    );
+                }
             } else {
                 let processed_msg = process_message_content(&full_msg);
                 for chid in override_channel_ids.into_iter() {
@@ -519,7 +538,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 let full_msg = process_message_content(&full_msg);
 
-                                // Channel recipients: per-job override (rc) else config defaults
+                                // Channel recipients: per-job override (rc) else profile defaults
                                 let mut channel_ids: Vec<u64> = Vec::new();
                                 if let Some(meta) = job.meta.as_ref() {
                                     if let Some(rc_val) = meta.get("rc") {
@@ -529,7 +548,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                                 if channel_ids.is_empty() {
-                                    channel_ids = profile_for_task.channel_ids_u64();
+                                    // Use profile's default_send_to_channel_ids
+                                    channel_ids = profile_for_task.default_send_channel_ids_u64();
                                 }
 
                                 if !channel_ids.is_empty() {
@@ -887,6 +907,7 @@ argv = ["run", "#INPUT#"]
             channel_type: "discord".to_string(),
             channel_ids: vec!["*".to_string()],
             bot_token: "token".to_string(),
+            default_send_to_channel_ids: Vec::new(),
             targets: std::collections::HashMap::new(),
         };
         assert!(profile.is_wildcard());
@@ -899,6 +920,7 @@ argv = ["run", "#INPUT#"]
             channel_type: "discord".to_string(),
             channel_ids: vec!["123".to_string(), "456".to_string()],
             bot_token: "token".to_string(),
+            default_send_to_channel_ids: Vec::new(),
             targets: std::collections::HashMap::new(),
         };
         assert!(!profile.is_wildcard());
@@ -911,6 +933,7 @@ argv = ["run", "#INPUT#"]
             channel_type: "discord".to_string(),
             channel_ids: vec!["123".to_string(), "456".to_string()],
             bot_token: "token".to_string(),
+            default_send_to_channel_ids: Vec::new(),
             targets: std::collections::HashMap::new(),
         };
         assert_eq!(profile.channel_ids_u64(), vec![123, 456]);
@@ -923,6 +946,7 @@ argv = ["run", "#INPUT#"]
             channel_type: "discord".to_string(),
             channel_ids: vec!["*".to_string()],
             bot_token: "token".to_string(),
+            default_send_to_channel_ids: Vec::new(),
             targets: std::collections::HashMap::new(),
         };
         assert_eq!(profile.channel_ids_u64(), Vec::<u64>::new());

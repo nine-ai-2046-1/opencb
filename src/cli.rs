@@ -34,7 +34,7 @@ pub enum Commands {
     /// 💬 發送一條消息（支援多個詞語自動拼接）
     Send {
         /// 💌 要發送嘅消息內容（至少一個詞）
-        #[arg(num_args = 1.., required = true, trailing_var_arg = true)]
+        #[arg(num_args = 1.., required = true)]
         message: Vec<String>,
         /// ⏱ 可選排程時間 HH:MM（例如 -t "10:15"）
         #[arg(short = 't', long = "time")]
@@ -42,6 +42,9 @@ pub enum Commands {
         /// 📅 可選排程日期 YYYY-MM-DD（例如 -d "2026-12-11"）
         #[arg(short = 'd', long = "date")]
         date: Option<String>,
+        /// 🎯 Profile ID to use (default: "default")
+        #[arg(long = "profile", default_value = "default")]
+        profile: String,
         /// 📣 覆蓋發送目標頻道，comma-separated list or single id (e.g. --rc "123,456")
         #[arg(long = "rc")]
         rc: Option<String>,
