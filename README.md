@@ -246,6 +246,7 @@ When the bot starts in serve mode, it automatically registers Discord slash comm
 | Command | Description |
 |---------|-------------|
 | `/echo <text>` | Echoes the text back to the channel, preserving formatting |
+| `/cli <args>` | Invokes `nine-cli` with the given arguments. Supports quoted args (e.g. `"hello world"`). Streams stdout live to Discord with rolling updates; times out after 10 minutes |
 
 Slash commands appear in Discord's `/` autocomplete menu immediately after the bot starts. No manual registration needed.
 
@@ -287,6 +288,9 @@ opencb/
 ├── ⚖️  LICENSE                # License
 ├── 🚫 .gitignore              # Git ignore rules
 ├── ⚙️  config.sample.toml     # Sample configuration file
+├── 📂 libs/
+│   └── 📂 argv-parser/
+│       └── mod.rs             # Quote-aware argv tokenizer (state machine)
 ├── 📂 src/
 │   ├── 🚀 main.rs             # Main program entry point
 │   ├── 📊 types.rs            # Message metadata type definitions
@@ -299,8 +303,9 @@ opencb/
 │   ├── ✂️  splitter.rs        # Long message splitting
 │   ├── 🕐 scheduler.rs        # Scheduled message job store
 │   └── 📂 slash_commands/
-│       ├── mod.rs             # Slash command registry, CommandContext, registration
-│       └── echo.rs            # /echo command implementation
+│       ├── mod.rs             # SlashCommand trait (async), ResponseHandle, CommandDispatch enum, registration
+│       ├── echo.rs            # /echo command implementation
+│       └── cli.rs             # /cli command — nine-cli streaming implementation
 └── 📂 openspec/               # Change management artifacts
 ```
 
@@ -318,8 +323,10 @@ opencb/
 | `handler.rs` | 🤖 Implements `EventHandler`: message filter, slash command routing, interaction handler |
 | `splitter.rs` | ✂️ Splits long messages into ≤2000-char Discord-safe chunks |
 | `scheduler.rs` | 🕐 In-memory scheduled job store for `send -t` |
-| `slash_commands/mod.rs` | 🎯 `SlashCommand` trait, `CommandContext`, command registry, Discord API registration |
+| `slash_commands/mod.rs` | 🎯 Async `SlashCommand` trait, `ResponseHandle`, `CommandDispatch` enum, command registry, Discord API registration |
 | `slash_commands/echo.rs` | 💬 `/echo` command — echoes args verbatim |
+| `slash_commands/cli.rs` | 🖥️ `/cli` command — tokenizes args, spawns `nine-cli`, streams stdout to Discord with rate-limited live edits and 10-min timeout |
+| `libs/argv-parser/mod.rs` | 🔤 Quote-aware argv tokenizer (`tokenize_argv`) — handles single/double quotes and backslash escapes |
 
 ## 🧪 Testing
 
@@ -328,7 +335,7 @@ opencb/
 cargo test
 
 # Expected output:
-# test result: ok. 49 passed; 0 failed; 0 ignored
+# test result: ok. 72 passed; 0 failed; 0 ignored
 ```
 
 ## 📝 Frequently Asked Questions

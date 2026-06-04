@@ -13,6 +13,10 @@ mod slash_commands;
 mod splitter;
 mod types;
 
+// argv-parser library: quote-aware argument tokenizer (lives in libs/argv-parser/)
+#[path = "../libs/argv-parser/mod.rs"]
+pub mod argv_parser;
+
 // 引入所需類型
 // sqlite and file persistence intentionally unused in pure in-memory mode
 use clap::Parser;
@@ -113,7 +117,7 @@ fn extract_time_date_message(
                 }
                 if sub.starts_with("--time=") || sub.starts_with("-t=") {
                     if effective_time.is_none() {
-                        if let Some(v) = sub.splitn(2, '=').nth(1) {
+                        if let Some(v) = sub.split_once('=').map(|x| x.1) {
                             effective_time = Some(v.to_string());
                         }
                     }
@@ -122,7 +126,7 @@ fn extract_time_date_message(
                 }
                 if sub.starts_with("--date=") || sub.starts_with("-d=") {
                     if effective_date.is_none() {
-                        if let Some(v) = sub.splitn(2, '=').nth(1) {
+                        if let Some(v) = sub.split_once('=').map(|x| x.1) {
                             effective_date = Some(v.to_string());
                         }
                     }
@@ -175,7 +179,7 @@ fn extract_time_date_message(
         // handle equals-style tokens inside parts (e.g., --time=23:59)
         if token.starts_with("--time=") || token.starts_with("-t=") {
             if effective_time.is_none() {
-                if let Some(v) = token.splitn(2, '=').nth(1) {
+                if let Some(v) = token.split_once('=').map(|x| x.1) {
                     effective_time = Some(v.to_string());
                 }
             }
@@ -184,7 +188,7 @@ fn extract_time_date_message(
         }
         if token.starts_with("--date=") || token.starts_with("-d=") {
             if effective_date.is_none() {
-                if let Some(v) = token.splitn(2, '=').nth(1) {
+                if let Some(v) = token.split_once('=').map(|x| x.1) {
                     effective_date = Some(v.to_string());
                 }
             }
@@ -233,28 +237,20 @@ fn extract_time_date_message(
     if effective_time.is_none() || effective_date.is_none() {
         let raw_args: Vec<String> = std::env::args().collect();
         for i in 0..raw_args.len() {
-            if (raw_args[i] == "-t" || raw_args[i] == "--time") && i + 1 < raw_args.len() {
-                if effective_time.is_none() {
-                    effective_time = Some(raw_args[i + 1].clone());
+            if (raw_args[i] == "-t" || raw_args[i] == "--time") && i + 1 < raw_args.len() && effective_time.is_none() {
+                effective_time = Some(raw_args[i + 1].clone());
+            }
+            if (raw_args[i] == "-d" || raw_args[i] == "--date") && i + 1 < raw_args.len() && effective_date.is_none() {
+                effective_date = Some(raw_args[i + 1].clone());
+            }
+            if (raw_args[i].starts_with("--time=") || raw_args[i].starts_with("-t=")) && effective_time.is_none() {
+                if let Some(v) = raw_args[i].split_once('=').map(|x| x.1) {
+                    effective_time = Some(v.to_string());
                 }
             }
-            if (raw_args[i] == "-d" || raw_args[i] == "--date") && i + 1 < raw_args.len() {
-                if effective_date.is_none() {
-                    effective_date = Some(raw_args[i + 1].clone());
-                }
-            }
-            if raw_args[i].starts_with("--time=") || raw_args[i].starts_with("-t=") {
-                if effective_time.is_none() {
-                    if let Some(v) = raw_args[i].splitn(2, '=').nth(1) {
-                        effective_time = Some(v.to_string());
-                    }
-                }
-            }
-            if raw_args[i].starts_with("--date=") || raw_args[i].starts_with("-d=") {
-                if effective_date.is_none() {
-                    if let Some(v) = raw_args[i].splitn(2, '=').nth(1) {
-                        effective_date = Some(v.to_string());
-                    }
+            if (raw_args[i].starts_with("--date=") || raw_args[i].starts_with("-d=")) && effective_date.is_none() {
+                if let Some(v) = raw_args[i].split_once('=').map(|x| x.1) {
+                    effective_date = Some(v.to_string());
                 }
             }
         }

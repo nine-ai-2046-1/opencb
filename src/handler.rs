@@ -6,12 +6,13 @@ use serenity::all::{
     EventHandler, Interaction, Message, Ready,
 };
 use serenity::async_trait;
+use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::config::Profile;
 use crate::inbound::extract_message_metadata;
 use crate::outbound::send_message_to_channel;
-use crate::slash_commands::{self, CommandContext};
+use crate::slash_commands::{self, CommandContext, ResponseHandle};
 
 /// 🤖 Serve 模式 handler
 /// 內含 profile（用嚟攞 bot_token, channel_ids, targets）
@@ -110,7 +111,7 @@ impl EventHandler for ServeHandler {
         match slash_commands::find(cmd_name) {
             Some(command) => {
                 let cmd_ctx = build_context_from_message(metadata, args);
-                let output = command.execute(&cmd_ctx);
+                let output = command.execute(&cmd_ctx).await;
                 if output.is_empty() {
                     warn!("⚠️ Slash command '{}' returned empty output", cmd_name);
                     return;
@@ -199,24 +200,32 @@ impl EventHandler for ServeHandler {
                 };
 
                 let cmd_ctx = CommandContext {
-                    args,
+                    args: args.clone(),
                     message: msg_metadata,
                 };
 
-                let output = command_impl.execute(&cmd_ctx);
-                if output.is_empty() {
-                    warn!("⚠️ Slash command '{}' returned empty output", cmd_name);
+                // 5.1 Defer the response immediately so Discord shows "thinking..."
+                // This avoids the 3-second interaction timeout for long-running commands.
+                let defer_resp = CreateInteractionResponse::Defer(
+                    CreateInteractionResponseMessage::new(),
+                );
+                if let Err(e) = command.create_response(&ctx.http, defer_resp).await {
+                    error!("❌ Failed to defer interaction for /{}: {}", cmd_name, e);
                     return;
                 }
 
-                let resp = CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new().content(&output),
-                );
-                if let Err(e) = command.create_response(&ctx.http, resp).await {
-                    error!("❌ Failed to respond to /{} interaction: {}", cmd_name, e);
-                } else {
-                    info!("✅ Slash command '{}' interaction responded", cmd_name);
-                }
+                // 5.2 Build ResponseHandle so the command can push updates to Discord
+                let handle = ResponseHandle {
+                    http: Arc::clone(&ctx.http),
+                    application_id: command.application_id,
+                    interaction_token: command.token.clone(),
+                };
+
+                // 5.3 Execute with streaming update support (replaces old create_response)
+                // 5.4 The old create_response call is removed — ResponseHandle handles all edits
+                info!("▶️  Dispatching /{} via execute_with_updates", cmd_name);
+                command_impl.execute_with_updates(&cmd_ctx, &handle).await;
+                info!("✅ Slash command '{}' interaction complete", cmd_name);
             }
             None => {
                 info!("🚫 Unknown slash command: '{}'", cmd_name);

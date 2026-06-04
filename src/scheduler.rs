@@ -97,7 +97,7 @@ pub fn build_job(
     time: &str,
 ) -> Result<ScheduledJob, Box<dyn std::error::Error>> {
     // validate time HH:MM
-    if !time.chars().all(|c| c.is_digit(10) || c == ':') || time.split(':').count() != 2 {
+    if !time.chars().all(|c| c.is_ascii_digit() || c == ':') || time.split(':').count() != 2 {
         return Err("invalid time format, expected HH:MM".into());
     }
     let date_str = match date {

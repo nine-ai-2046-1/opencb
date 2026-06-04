@@ -412,14 +412,14 @@ fn render_default_toml(_cfg: &Config) -> String {
     let mut s = String::new();
     s.push_str("# 🤖 OpenCB 配置檔 - 請填入你嘅資料\n");
     s.push_str("debug = false\n");
-    s.push_str("\n");
+    s.push('\n');
     s.push_str("# ── Profiles ──\n");
     s.push_str("[profiles.default]\n");
     s.push_str("profile_id = \"default\"\n");
     s.push_str("channel_type = \"discord\"\n");
     s.push_str("channel_ids = [\"*\"]  # or specific IDs: [\"123\", \"456\"]\n");
     s.push_str("bot_token = \"YOUR_BOT_TOKEN_HERE\"\n");
-    s.push_str("\n");
+    s.push('\n');
     s.push_str("[profiles.default.targets.opencode]\n");
     s.push_str("cmd = \"opencode\"\n");
     s.push_str("argv = [\"run\", \"#INPUT#\"]\n");

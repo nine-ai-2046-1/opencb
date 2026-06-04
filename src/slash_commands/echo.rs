@@ -27,7 +27,7 @@ impl SlashCommand for EchoCommand {
     }
 
     /// Returns ctx.args verbatim (the value of the "text" option).
-    fn execute(&self, ctx: &CommandContext) -> String {
+    async fn execute(&self, ctx: &CommandContext) -> String {
         ctx.args.to_string()
     }
 }

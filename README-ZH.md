@@ -196,6 +196,7 @@ Bot 啟動時會自動向 Discord 註冊 slash 命令：
 | 命令 | 說明 |
 |------|------|
 | `/echo <文字>` | 原樣回覆輸入嘅文字，保留格式 |
+| `/cli <參數>` | 用指定參數調用 `nine-cli`。支援引號包圍嘅參數（例如 `"hello world"`）。即時串流 stdout 到 Discord 並滾動更新；10 分鐘後逾時 |
 
 Slash 命令喺 Bot 啟動後即時出現喺 Discord 嘅 `/` 自動補全選單，唔需要手動註冊。
 
@@ -226,6 +227,9 @@ opencb/
 ├── ⚖️  LICENSE                # 許可證
 ├── 🚫 .gitignore              # Git 忽略規則
 ├── ⚙️  config.sample.toml     # 配置範例檔
+├── 📂 libs/
+│   └── 📂 argv-parser/
+│       └── mod.rs             # 支援引號嘅 argv tokenizer（狀態機）
 ├── 📂 src/
 │   ├── 🚀 main.rs             # 主程序入口
 │   ├── 📊 types.rs            # 訊息元數據類型定義
@@ -238,8 +242,9 @@ opencb/
 │   ├── ✂️  splitter.rs        # 長訊息分割
 │   ├── 🕐 scheduler.rs        # 排程訊息 job store
 │   └── 📂 slash_commands/
-│       ├── mod.rs             # Slash 命令登記、CommandContext、Discord 註冊
-│       └── echo.rs            # /echo 命令實作
+│       ├── mod.rs             # SlashCommand trait（async）、ResponseHandle、CommandDispatch enum、Discord 註冊
+│       ├── echo.rs            # /echo 命令實作
+│       └── cli.rs             # /cli 命令 — nine-cli 串流實作
 └── 📂 openspec/               # 變更管理 artifacts
 ```
 
@@ -257,8 +262,10 @@ opencb/
 | `handler.rs` | 🤖 實作 `EventHandler`：訊息篩選、slash 命令路由、interaction 處理 |
 | `splitter.rs` | ✂️ 將長訊息分割成 ≤2000 字元嘅 Discord 安全區塊 |
 | `scheduler.rs` | 🕐 `send -t` 排程功能嘅 in-memory job store |
-| `slash_commands/mod.rs` | 🎯 `SlashCommand` trait、`CommandContext`、命令登記、Discord API 註冊 |
+| `slash_commands/mod.rs` | 🎯 Async `SlashCommand` trait、`ResponseHandle`、`CommandDispatch` enum、命令登記、Discord API 註冊 |
 | `slash_commands/echo.rs` | 💬 `/echo` 命令 — 原樣回覆 args |
+| `slash_commands/cli.rs` | 🖥️ `/cli` 命令 — tokenize 參數、spawn `nine-cli`、串流 stdout 到 Discord（限速即時編輯，10 分鐘逾時） |
+| `libs/argv-parser/mod.rs` | 🔤 支援引號嘅 argv tokenizer（`tokenize_argv`）— 處理單雙引號及反斜線跳脫 |
 
 ## 🧪 測試
 
@@ -267,7 +274,7 @@ opencb/
 cargo test
 
 # 預期輸出：
-# test result: ok. 49 passed; 0 failed; 0 ignored
+# test result: ok. 72 passed; 0 failed; 0 ignored
 ```
 
 ## 📝 常見問題

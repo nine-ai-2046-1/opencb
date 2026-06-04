@@ -1,18 +1,35 @@
 ## ADDED Requirements
 
 ### Requirement: SlashCommand trait definition
-The system SHALL define a `SlashCommand` trait in `src/slash_commands/mod.rs` with methods `name() -> &str` and `execute(args: &str) -> String`. All slash commands SHALL implement this trait.
+The system SHALL define a `SlashCommand` trait in `src/slash_commands/mod.rs` with:
+- `fn name(&self) -> &str` (sync)
+- `fn description(&self) -> &str` (sync)
+- `fn options(&self) -> Vec<CreateCommandOption>` (sync, default `vec![]`)
+- `async fn execute(&self, ctx: &CommandContext) -> String` — all commands MUST implement this
+- `async fn execute_with_updates(&self, ctx: &CommandContext, handle: &ResponseHandle)` — default implementation calls `self.execute(ctx).await` and then `handle.finalize(&result).await`; streaming commands MAY override this method
 
 #### Scenario: Trait implementation
 - **WHEN** a new command struct implements `SlashCommand`
-- **THEN** it SHALL be callable via `name()` to get its name and `execute(args)` to run it
+- **THEN** it SHALL be callable via `name()` to get its name and `execute(ctx).await` to run it
+
+#### Scenario: Simple command uses default execute_with_updates
+- **WHEN** a command implements only `async fn execute()` and `execute_with_updates()` is called
+- **THEN** the default implementation SHALL call `execute()` once and pass the result to `handle.finalize()`
+
+#### Scenario: Streaming command overrides execute_with_updates
+- **WHEN** a command overrides `execute_with_updates()` and the handler calls it
+- **THEN** the command MAY call `handle.update()` multiple times before calling `handle.finalize()`
 
 ### Requirement: Command registration and lookup
-The system SHALL provide a `find(command_name: &str) -> Option<Box<dyn SlashCommand>>` function in `slash_commands::mod` that routes command names to their implementations.
+The system SHALL provide a `find(command_name: &str) -> Option<CommandDispatch>` function in `slash_commands::mod` that routes command names to their implementations via enum dispatch.
 
 #### Scenario: Find registered command
 - **WHEN** `find("echo")` is called
-- **THEN** it SHALL return `Some(Box<EchoCommand>)`
+- **THEN** it SHALL return `Some(CommandDispatch::Echo)`
+
+#### Scenario: Find registered cli command
+- **WHEN** `find("cli")` is called
+- **THEN** it SHALL return `Some(CommandDispatch::Cli)`
 
 #### Scenario: Find unregistered command
 - **WHEN** `find("nonexistent")` is called
@@ -57,8 +74,21 @@ The system SHALL implement an `/echo` command in `src/slash_commands/echo.rs` th
 - **THEN** the system SHALL reply with an empty string
 
 ### Requirement: Modular command structure
-The system SHALL organize slash commands in `src/slash_commands/` with one file per command. Adding a new command SHALL require: (1) creating a new file implementing `SlashCommand`, (2) adding a match arm in `find()`.
+The system SHALL organize slash commands in `src/slash_commands/` with one file per command. Adding a new command SHALL require: (1) creating a new file implementing `SlashCommand`, (2) adding a variant to `CommandDispatch` and match arms in `find()`, `all_commands()`, and `CommandDispatch` delegation methods.
 
 #### Scenario: New command file structure
 - **WHEN** developer creates `src/slash_commands/news.rs` with `NewsCommand` struct
-- **THEN** it SHALL be importable from `slash_commands::mod` and registerable in `find()`
+- **THEN** it SHALL be importable from `slash_commands::mod` and registerable via `CommandDispatch`
+
+### Requirement: ResponseHandle for interaction updates
+The system SHALL provide a `ResponseHandle` struct in `src/slash_commands/mod.rs` that wraps `Arc<serenity::all::Http>` and an interaction token string. It SHALL expose:
+- `async fn update(&self, content: &str)` — edits the deferred interaction response with new content
+- `async fn finalize(&self, content: &str)` — makes the final edit to the interaction response
+
+#### Scenario: Intermediate update via handle
+- **WHEN** `handle.update("step 1 done")` is called
+- **THEN** the Discord interaction message SHALL be edited to show `"step 1 done"`
+
+#### Scenario: Final update via handle
+- **WHEN** `handle.finalize("all done")` is called
+- **THEN** the Discord interaction message SHALL be edited to show `"all done"` as the final response
