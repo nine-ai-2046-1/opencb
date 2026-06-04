@@ -155,6 +155,17 @@ impl EventHandler for ServeHandler {
             .collect::<Vec<_>>()
             .join(" ");
 
+        // 📝 Print message body to console — interaction accepted, not rejected
+        println!("\n========== 📨 Slash Command Interaction ==========");
+        println!("command : /{}", cmd_name);
+        println!("text    : {}", args);
+        println!("user    : {} ({})", command.user.name, command.user.id);
+        println!("channel : {}", command.channel_id);
+        if let Some(gid) = command.guild_id {
+            println!("guild   : {}", gid);
+        }
+        println!("==================================================\n");
+
         // Find and execute command
         match slash_commands::find(&cmd_name) {
             Some(command_impl) => {

@@ -3,7 +3,8 @@
 
 use serenity::all::Http;
 use serenity::all::UserId;
-use serenity::builder::Builder;
+use serenity::builder::{Builder, CreateCommandOption};
+use serenity::all::CommandOptionType;
 use tracing::info;
 
 use crate::types::MessageMetadata;
@@ -29,8 +30,16 @@ pub trait SlashCommand: Send + Sync {
     /// Used for Discord slash command registration.
     fn description(&self) -> &str;
 
+    /// Returns the Discord option definitions for this command.
+    /// These are sent to Discord at registration so the UI shows the correct input fields.
+    /// Default: empty (no options). Override to declare parameters.
+    fn options(&self) -> Vec<CreateCommandOption> {
+        vec![]
+    }
+
     /// Execute the command with the given context.
-    /// `ctx.args` contains the arguments text, `ctx.message` contains full metadata.
+    /// `ctx.args` contains the arguments text joined from all String options.
+    /// `ctx.message` contains full message metadata.
     fn execute(&self, ctx: &CommandContext) -> String;
 }
 
@@ -56,8 +65,12 @@ pub fn all_commands() -> Vec<Box<dyn SlashCommand>> {
 /// Called once on bot startup from `ready()` event.
 pub async fn register_all_commands(http: &Http, _app_id: UserId) {
     for cmd in all_commands() {
-        let builder = serenity::builder::CreateCommand::new(cmd.name())
+        // Build the command with its declared options so Discord shows the correct input fields
+        let mut builder = serenity::builder::CreateCommand::new(cmd.name())
             .description(cmd.description());
+        for opt in cmd.options() {
+            builder = builder.add_option(opt);
+        }
         match builder.execute(http, (None, None)).await {
             Ok(_) => info!("✅ Registered slash command: /{}", cmd.name()),
             Err(e) => tracing::error!("❌ Failed to register /{}: {}", cmd.name(), e),
