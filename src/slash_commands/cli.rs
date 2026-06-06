@@ -260,11 +260,13 @@ fn format_header(done: bool, raw_args: &str, icon: Option<&str>) -> String {
 /// Apply a rolling display window: if output exceeds MAX_DISPLAY_CHARS,
 /// show a truncation notice followed by the last ROLLING_WINDOW_CHARS characters.
 fn apply_rolling_window(output: &str) -> String {
-    if output.len() <= MAX_DISPLAY_CHARS {
+    let char_count = output.chars().count();
+    if char_count <= MAX_DISPLAY_CHARS {
         output.to_string()
     } else {
-        // Take the last ROLLING_WINDOW_CHARS characters
-        let tail = &output[output.len() - ROLLING_WINDOW_CHARS..];
+        // Take the last ROLLING_WINDOW_CHARS characters (char-based, not byte-based)
+        let skip = char_count - ROLLING_WINDOW_CHARS;
+        let tail: String = output.chars().skip(skip).collect();
         format!("[...earlier output truncated...]\n{}", tail)
     }
 }
@@ -334,7 +336,7 @@ mod tests {
         let long = "x".repeat(MAX_DISPLAY_CHARS + 100);
         let result = apply_rolling_window(&long);
         assert!(result.starts_with("[...earlier output truncated...]"));
-        assert!(result.len() <= MAX_DISPLAY_CHARS + 50); // well within Discord limit
+        assert!(result.chars().count() <= MAX_DISPLAY_CHARS + 50); // well within Discord limit
     }
 
     #[tokio::test]
