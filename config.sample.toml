@@ -1,17 +1,15 @@
 # 🤖 OpenCB config sample. Fill secrets locally and DO NOT commit real tokens.
-debug = false
+# Place this file at ~/.config/opencb/<profile>/config.toml
 
-# ── Profiles ──
-[profiles.default]
-profile_id = "default"
-channel_type = "discord"
-channel_ids = ["*"]  # serve mode: ["*"] = any channel, or specific IDs: ["123", "456"]
 bot_token = "YOUR_BOT_TOKEN_HERE"
-# default_send_to_channel_ids: channels the `send` command writes to. Must not be "*".
-# default_send_to_channel_ids = ["123456789012345678"]
+channel_ids = ["*"]  # serve mode: ["*"] = any channel, or specific IDs: ["123", "456"]
+cli_only = true  # true: only /commands, false: all messages
+# debug = false
+# owner_id = []
+# scheduled_admin_bind = "127.0.0.1:19001"
 
-[profiles.default.targets.opencode]
+# ── Target CLIs ──
+[target.opencode]
 cmd = "opencode"
 argv = ["run", "#INPUT#"]
 # work_dir = "/tmp"
-

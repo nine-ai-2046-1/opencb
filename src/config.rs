@@ -1,18 +1,25 @@
 //! ⚙️ 配置處理模組
 //! 負責讀取同驗證 config.toml 配置檔 ✨
+//!
+//! 新架構：每個 profile 有獨立目錄
+//!   ~/.config/opencb/config.toml          ← 全域預設
+//!   ~/.config/opencb/<profile_id>/config.toml ← 個別 profile
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::profile_manager;
+
 /// Regex for validating profile names and command names: ^[a-z0-9_-]+$
+#[allow(dead_code)]
 pub fn is_valid_name(name: &str) -> bool {
     !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
 
 /// 🎯 Target CLI 規格（用嚟描述要叫邊個外部 CLI）
-/// 例如 [opencode] cmd="opencode" argv=["run","#INPUT#"] work_dir="/tmp"
+/// 例如 [target.opencode] cmd="opencode" argv=["run","#INPUT#"] work_dir="/tmp"
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct TargetSpec {
     /// 🛠️ 執行檔（例如 "opencode"、"bash"）
@@ -24,34 +31,42 @@ pub struct TargetSpec {
     pub work_dir: Option<String>,
 }
 
-/// 🎯 Bot Profile 配置結構體（對應 [profiles.<name>] table）
+/// 🤖 Bot 配置結構體（對應 config.toml 嘅欄位）
+/// 每個 config.toml 就是一個 profile，格式扁平無 sections
 #[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct Profile {
-    /// Profile ID（須同 TOML table key 一致）
-    pub profile_id: String,
-    /// Channel type（預設 "discord"）
-    #[serde(default = "default_channel_type")]
-    pub channel_type: String,
-    /// 目標頻道 ID 列表，支援 ["*"] 表示接受所有頻道
-    pub channel_ids: Vec<String>,
+pub struct Config {
+    /// 配置檔嘅完整路徑（運行時設定，唔從 TOML 讀取）
+    #[serde(default, skip)]
+    pub config_path: PathBuf,
     /// Discord bot token
     pub bot_token: String,
-    /// 🎯 用嚟 send 嘅預設頻道 ID 列表（唔可以係 "*" 或空）
+    /// 目標頻道嘅 channel ID 列表，支援 ["*"] 表示接受所有頻道
     #[serde(default)]
-    pub default_send_to_channel_ids: Vec<String>,
-    /// Profile 獨立嘅 Target CLI map
-    #[serde(default, skip)]
+    pub channel_ids: Vec<String>,
+    /// Bot owner 嘅 user ID 列表（字串陣列）
+    #[serde(default)]
+    pub owner_id: Vec<String>,
+    /// 係咪開 debug 模式（可選）。預設 false
+    pub debug: Option<bool>,
+    /// 🎯 Target CLI map
+    #[serde(default)]
     pub targets: HashMap<String, TargetSpec>,
+    /// Admin HTTP server bind address for scheduling admin endpoint
+    #[serde(default)]
+    pub scheduled_admin_bind: Option<String>,
+    /// 🎛️ If true, only process messages starting with "/" (slash commands).
+    /// If false, process ALL messages and pass them to the target CLI.
+    #[serde(default = "default_cli_only")]
+    pub cli_only: bool,
 }
 
-fn default_channel_type() -> String {
-    "discord".to_string()
+fn default_cli_only() -> bool {
+    true
 }
 
-impl Profile {
+impl Config {
     /// Parse channel_ids into u64 values. Invalid entries are ignored.
     /// Returns empty Vec if wildcard "*" is present.
-    #[allow(dead_code)]
     pub fn channel_ids_u64(&self) -> Vec<u64> {
         if self.channel_ids.iter().any(|s| s == "*") {
             return Vec::new();
@@ -62,57 +77,30 @@ impl Profile {
             .collect()
     }
 
-    /// Check if this profile accepts all channels (wildcard mode).
+    /// Check if this config accepts all channels (wildcard mode).
     pub fn is_wildcard(&self) -> bool {
         self.channel_ids.iter().any(|s| s == "*")
     }
 
     /// Get default send channel IDs for the send command.
-    /// Returns parsed u64 IDs if configured, empty Vec otherwise.
     pub fn default_send_channel_ids_u64(&self) -> Vec<u64> {
-        self.default_send_to_channel_ids
-            .iter()
-            .filter_map(|s| s.parse::<u64>().ok())
-            .collect()
+        self.channel_ids_u64()
     }
-}
 
-/// 🤖 Bot 配置結構體（對應 config.toml 嘅欄位）
-#[derive(Deserialize, Serialize, Clone)]
-pub struct Config {
-    /// Profiles map（key 係 profile name，例如 "default"）
-    #[serde(default, skip)]
-    pub profiles: HashMap<String, Profile>,
-    /// Discord bot token（fallback，向後兼容舊格式）
-    pub bot_token: String,
-    /// 目標頻道嘅 channel ID 列表（fallback，向後兼容舊格式）
-    pub channel_id: Vec<String>,
-    /// Bot owner 嘅 user ID 列表（字串陣列）
-    pub owner_id: Vec<String>,
-    /// 係咪開 debug 模式（可選）。預設 false
-    pub debug: Option<bool>,
-    /// 🎯 Target CLI map（fallback，向後兼容舊格式）
-    #[serde(default, skip)]
-    #[allow(dead_code)]
-    pub targets: HashMap<String, TargetSpec>,
-    /// Admin HTTP server bind address for scheduling admin endpoint (e.g. "127.0.0.1:19001")
-    #[serde(default)]
-    pub scheduled_admin_bind: Option<String>,
-}
-
-impl Config {
-    /// Try to parse channel_id strings into u64 values. Invalid entries are ignored.
-    #[allow(dead_code)]
-    pub fn channel_ids_u64(&self) -> Vec<u64> {
-        self.channel_id
-            .iter()
-            .filter_map(|s| s.parse::<u64>().ok())
-            .collect()
+    /// Get the profile ID derived from the config file path.
+    /// e.g. ~/.config/opencb/work/config.toml → "work"
+    /// e.g. ~/.config/opencb/config.toml → "default"
+    pub fn profile_id(&self) -> String {
+        self.config_path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("default")
+            .to_string()
     }
 }
 
 impl Default for Config {
-    /// 🆕 生成預設 config，畀用戶填返自己嘅資料
     fn default() -> Self {
         let mut targets = HashMap::new();
         targets.insert(
@@ -124,13 +112,14 @@ impl Default for Config {
             },
         );
         Self {
-            profiles: HashMap::new(),
+            config_path: PathBuf::new(),
             bot_token: "YOUR_BOT_TOKEN_HERE".to_string(),
-            channel_id: Vec::new(),
+            channel_ids: Vec::new(),
             owner_id: Vec::new(),
             debug: Some(false),
             targets,
             scheduled_admin_bind: Some("127.0.0.1:19001".to_string()),
+            cli_only: true,
         }
     }
 }
@@ -172,93 +161,120 @@ fn parse_targets(tbl: &toml::Value) -> Result<HashMap<String, TargetSpec>, Box<d
     Ok(targets)
 }
 
-/// Validate a profile's fields: bot_token required, channel_ids non-empty.
-fn validate_profile(name: &str, profile: &Profile) -> Result<(), Box<dyn std::error::Error>> {
-    if !is_valid_name(name) {
-        return Err(format!(
-            "Invalid profile name '{}' — must match [a-z0-9_-]+",
-            name
-        ).into());
+/// Validate config fields: bot_token required, channel_ids non-empty.
+fn validate_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    if config.bot_token.is_empty() {
+        return Err("bot_token is missing or empty".into());
     }
-    if profile.profile_id != name {
-        return Err(format!(
-            "Profile table key '{}' does not match profile_id '{}'",
-            name, profile.profile_id
-        ).into());
+    if config.bot_token == "YOUR_BOT_TOKEN_HERE" {
+        return Err("Please set your bot_token in config.toml".into());
     }
-    if profile.bot_token.is_empty() {
-        return Err(format!("Profile '{}' is missing bot_token", name).into());
-    }
-    if profile.bot_token == "YOUR_BOT_TOKEN_HERE" {
-        return Err(format!(
-            "Profile '{}' has placeholder bot_token — please set a real token",
-            name
-        ).into());
-    }
-    if profile.channel_ids.is_empty() {
-        return Err(format!("Profile '{}' channel_ids must not be empty", name).into());
+    if config.channel_ids.is_empty() {
+        return Err("channel_ids must not be empty".into());
     }
     // Validate wildcard is alone
-    if profile.channel_ids.iter().any(|s| s == "*") && profile.channel_ids.len() > 1 {
-        return Err(format!(
-            "Profile '{}' channel_ids: '*' must be the only element when used",
-            name
-        ).into());
+    if config.channel_ids.iter().any(|s| s == "*") && config.channel_ids.len() > 1 {
+        return Err("channel_ids: '*' must be the only element when used".into());
     }
-    // Validate default_send_to_channel_ids: must not contain "*" or be empty if present
-    if !profile.default_send_to_channel_ids.is_empty() {
-        if profile.default_send_to_channel_ids.iter().any(|s| s == "*") {
-            return Err(format!(
-                "Profile '{}' default_send_to_channel_ids must not contain '*'",
-                name
-            ).into());
-        }
-        for id in &profile.default_send_to_channel_ids {
-            if id.parse::<u64>().is_err() {
-                return Err(format!(
-                    "Profile '{}' default_send_to_channel_ids contains invalid ID: '{}'",
-                    name, id
-                ).into());
-            }
-        }
-    }
+    // Validate default_send_to_channel_ids via channel_ids field
     Ok(())
 }
 
-/// 📂 讀取 config.toml，唔存在就創建預設檔
-pub fn load_config(config_path: Option<&str>) -> Result<Config, Box<dyn std::error::Error>> {
-    let path = match config_path {
-        Some(p) => {
-            let p = Path::new(p);
-            if p.is_relative() {
-                std::env::current_dir()?.join(p)
-            } else {
-                p.to_path_buf()
-            }
-        }
-        None => {
-            let home = std::env::var("HOME")
-                .or_else(|_| std::env::var("USERPROFILE"))
-                .map_err(|_| "Cannot determine home directory ($HOME or $USERPROFILE)")?;
-            PathBuf::from(home).join(".config").join("opencb").join("config.toml")
-        }
-    };
+/// Get the opencb config base directory (~/.config/opencb/)
+fn opencb_config_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "Cannot determine home directory ($HOME or $USERPROFILE)")?;
+    Ok(PathBuf::from(home).join(".config").join("opencb"))
+}
 
-    if !path.exists() {
-        if config_path.is_none() {
-            let default_config = Config::default();
-            if let Some(parent) = path.parent() {
+/// 📂 讀取 config.toml
+///
+/// 嘗試順序：
+///   1. --config <path> → 直接用指定路徑
+///   2. --profile <id> → ~/.config/opencb/<id>/config.toml
+///      - 不存在 → 自動建立目錄、複製預設檔、提示用戶、return error
+///   3. (無參數) → ~/.config/opencb/default/config.toml
+pub fn load_config(
+    config_path: Option<&str>,
+    profile: Option<&str>,
+) -> Result<Config, Box<dyn std::error::Error>> {
+    let path = if let Some(p) = config_path {
+        // --config 旗標：直接用指定路徑
+        let p = Path::new(p);
+        if p.is_relative() {
+            std::env::current_dir()?.join(p)
+        } else {
+            p.to_path_buf()
+        }
+    } else if let Some(profile_id) = profile {
+        // --profile 旗標：去 ~/.config/opencb/<profile_id>/config.toml
+        let base = opencb_config_dir()?;
+        let profile_path = base.join(profile_id).join("config.toml");
+
+        if !profile_path.exists() {
+            // 建立 profile 目錄並複製預設檔
+            let default_config = base.join("default").join("config.toml");
+            if !default_config.exists() {
+                // default profile 冇，先建立
+                if let Some(parent) = default_config.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                let toml_str = render_default_toml();
+                fs::write(&default_config, &toml_str)?;
+            }
+
+            if let Some(parent) = profile_path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            let toml_str = render_default_toml(&default_config);
-            fs::write(&path, toml_str)?;
+            fs::copy(&default_config, &profile_path)?;
+
             return Err(format!(
-                "Config file '{}' not found. Default config created. Please fill in your values before running again.",
-                path.display()
+                "Profile '{}' config created at:\n  {}\n\nPlease edit this file with your settings, then run the command again.",
+                profile_id,
+                profile_path.display()
             ).into());
-        } else {
+        }
+
+        profile_path
+    } else {
+        // 無參數：用 default profile
+        let base = opencb_config_dir()?;
+        base.join("default").join("config.toml")
+    };
+
+    // 檔案唔存在 → 自動建立預設
+    if !path.exists() {
+        if config_path.is_some() {
             return Err(format!("Config file '{}' does not exist", path.display()).into());
         }
+        // Default profile 唔存在 → 啟動互動設定
+        if profile.is_none() {
+            eprintln!("Default profile not found. Launching interactive setup...");
+            let profile_id = "default".to_string();
+            match profile_manager::add_profile(
+                &profile_id,
+                None, None, None, None,
+            ) {
+                Ok(setup_config) => {
+                    return Ok(setup_config);
+                }
+                Err(e) => {
+                    eprintln!("Setup cancelled or failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        // --profile specified but dir missing → create dir + copy default + error
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let toml_str = render_default_toml();
+        fs::write(&path, toml_str)?;
+        return Err(format!(
+            "Config file '{}' not found. Default config created. Please fill in your values before running again.",
+            path.display()
+        ).into());
     }
 
     let metadata = fs::metadata(&path)?;
@@ -266,26 +282,25 @@ pub fn load_config(config_path: Option<&str>) -> Result<Config, Box<dyn std::err
         return Err(format!(
             "Config file '{}' is not readable (read-only or no permission)",
             path.display()
-        )
-        .into());
+        ).into());
     }
 
     let content = fs::read_to_string(&path)?;
     let raw: toml::Value = toml::from_str(&content)?;
 
-    // Parse top-level fields (fallback / legacy format)
+    // 解析扁平 config 欄位
     let bot_token = raw
         .get("bot_token")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or_default();
 
-    let channel_id_vec = match raw.get("channel_id") {
+    let channel_ids = match raw.get("channel_ids") {
         Some(v) => parse_channel_ids(v),
         None => Vec::new(),
     };
 
-    let owner_id_vec: Vec<String> = match raw.get("owner_id") {
+    let owner_id: Vec<String> = match raw.get("owner_id") {
         Some(v) => {
             if let Some(arr) = v.as_array() {
                 arr.iter()
@@ -301,126 +316,117 @@ pub fn load_config(config_path: Option<&str>) -> Result<Config, Box<dyn std::err
     };
 
     let debug = raw.get("debug").and_then(|v| v.as_bool());
+    let cli_only = raw.get("cli_only").and_then(|v| v.as_bool()).unwrap_or(true);
     let scheduled_admin_bind = raw
         .get("scheduled_admin_bind")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    // 🔍 Check for [profiles] section
-    let has_profiles = raw.get("profiles").and_then(|v| v.as_table()).is_some();
+    let targets = parse_targets(&raw)?;
 
-    let mut profiles = HashMap::new();
+    let mut config = Config {
+        config_path: path.clone(),
+        bot_token,
+        channel_ids,
+        owner_id,
+        debug,
+        targets,
+        scheduled_admin_bind,
+        cli_only,
+    };
 
-    if has_profiles {
-        // Parse [profiles.<name>] tables
-        if let Some(profiles_tbl) = raw.get("profiles").and_then(|v| v.as_table()) {
-            for (name, val) in profiles_tbl {
-                if let toml::Value::Table(tbl) = val {
-                    let profile_id = tbl
-                        .get("profile_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(name)
-                        .to_string();
-                    let channel_type = tbl
-                        .get("channel_type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("discord")
-                        .to_string();
-                    let channel_ids = match tbl.get("channel_ids") {
-                        Some(v) => parse_channel_ids(v),
-                        None => Vec::new(),
-                    };
-                    let profile_bot_token = tbl
-                        .get("bot_token")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+    // 如果 channel_ids 為空，預設為 wildcard
+    if config.channel_ids.is_empty() {
+        config.channel_ids = vec!["*".to_string()];
+    }
 
-                    // Parse default_send_to_channel_ids from the profile's table
-                    let default_send_to_channel_ids = match tbl.get("default_send_to_channel_ids") {
-                        Some(v) => parse_channel_ids(v),
-                        None => Vec::new(),
-                    };
+    // Auto-setup: if this is the default profile and key fields are incomplete, launch interactive setup
+    if config_path.is_none() && profile.is_none() {
+        let needs_setup = config.bot_token.is_empty()
+            || config.bot_token == "YOUR_BOT_TOKEN_HERE"
+            || config.channel_ids.iter().all(|s| s == "*");
 
-                    // Parse targets from the profile's table
-                    let targets = parse_targets(&toml::Value::Table(tbl.clone()))?;
-
-                    let profile = Profile {
-                        profile_id: profile_id.clone(),
-                        channel_type,
-                        channel_ids,
-                        bot_token: profile_bot_token,
-                        default_send_to_channel_ids,
-                        targets,
-                    };
-
-                    validate_profile(name, &profile)?;
-                    profiles.insert(name.clone(), profile);
+        if needs_setup {
+            eprintln!("Default profile is not configured. Launching interactive setup...");
+            let profile_id = config.profile_id();
+            match profile_manager::add_profile(
+                &profile_id,
+                None, // no prefill — force interactive prompts
+                None,
+                None,
+                None,
+            ) {
+                Ok(setup_config) => {
+                    return Ok(setup_config);
+                }
+                Err(e) => {
+                    eprintln!("Setup cancelled or failed: {}", e);
+                    std::process::exit(1);
                 }
             }
         }
-
-        Ok(Config {
-            profiles,
-            bot_token,
-            channel_id: channel_id_vec,
-            owner_id: owner_id_vec,
-            debug,
-            targets: HashMap::new(),
-            scheduled_admin_bind,
-        })
-    } else {
-        // Fallback: build synthetic "default" profile from top-level fields
-        if bot_token.is_empty() {
-            return Err("bot_token missing or invalid in config.toml".into());
-        }
-        if bot_token == "YOUR_BOT_TOKEN_HERE" {
-            return Err("Please set your BOT_TOKEN in config.toml".into());
-        }
-
-        let fallback_targets = parse_targets(&raw)?;
-
-        let default_profile = Profile {
-            profile_id: "default".to_string(),
-            channel_type: "discord".to_string(),
-            channel_ids: if channel_id_vec.is_empty() {
-                vec!["*".to_string()]
-            } else {
-                channel_id_vec.clone()
-            },
-            bot_token: bot_token.clone(),
-            default_send_to_channel_ids: Vec::new(),
-            targets: fallback_targets.clone(),
-        };
-
-        profiles.insert("default".to_string(), default_profile);
-
-        Ok(Config {
-            profiles,
-            bot_token,
-            channel_id: channel_id_vec,
-            owner_id: owner_id_vec,
-            debug,
-            targets: fallback_targets,
-            scheduled_admin_bind,
-        })
     }
+
+    validate_config(&config)?;
+
+    Ok(config)
 }
 
-/// 🖊️ 整出預設 config.toml 內容（profiles 格式）
-fn render_default_toml(_cfg: &Config) -> String {
+/// 列出所有可用嘅 profile（掃描 ~/.config/opencb/*/config.toml）
+pub fn list_profiles(config_path: Option<&str>) -> Result<Vec<(String, PathBuf)>, Box<dyn std::error::Error>> {
+    let base = if let Some(p) = config_path {
+        let p = Path::new(p);
+        if p.is_relative() {
+            std::env::current_dir()?.join(p)
+        } else {
+            p.to_path_buf()
+        }
+    } else {
+        opencb_config_dir()?
+    };
+
+    let base_dir = if base.is_file() {
+        base.parent().unwrap_or(&base).to_path_buf()
+    } else {
+        base
+    };
+
+    let mut profiles = Vec::new();
+
+    // 掃描子目錄（包括 default）
+    if base_dir.is_dir() {
+        let entries = fs::read_dir(&base_dir)?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let config_file = path.join("config.toml");
+                if config_file.exists() {
+                    let name = path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    profiles.push((name, config_file));
+                }
+            }
+        }
+    }
+
+    profiles.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(profiles)
+}
+
+/// 🖊️ 整出預設 config.toml 內容（扁平格式）
+fn render_default_toml() -> String {
     let mut s = String::new();
-    s.push_str("# 🤖 OpenCB 配置檔 - 請填入你嘅資料\n");
-    s.push_str("debug = false\n");
+    s.push_str("# 🤖 OpenCB Config\n");
+    s.push_str("# Edit this file with your settings.\n");
     s.push('\n');
-    s.push_str("# ── Profiles ──\n");
-    s.push_str("[profiles.default]\n");
-    s.push_str("profile_id = \"default\"\n");
-    s.push_str("channel_type = \"discord\"\n");
-    s.push_str("channel_ids = [\"*\"]  # or specific IDs: [\"123\", \"456\"]\n");
     s.push_str("bot_token = \"YOUR_BOT_TOKEN_HERE\"\n");
+    s.push_str("channel_ids = [\"*\"]  # or specific IDs: [\"123\", \"456\"]\n");
+    s.push_str("cli_only = true  # true: only /commands, false: all messages\n");
     s.push('\n');
-    s.push_str("[profiles.default.targets.opencode]\n");
+    s.push_str("# Target CLIs\n");
+    s.push_str("[target.opencode]\n");
     s.push_str("cmd = \"opencode\"\n");
     s.push_str("argv = [\"run\", \"#INPUT#\"]\n");
     s.push_str("# work_dir = \"/tmp\"\n");

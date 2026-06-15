@@ -1,0 +1,12 @@
+# 🤖 OpenCB 配置檔 - 請填入你嘅資料
+bot_token = "YOUR_BOT_TOKEN_HERE"
+channel_id = 123456789012345678
+# owner_id = "123456789"
+debug = true
+
+# 🎯 Target CLI 範例（可以加多個 [xxx] table）
+# 收到 message 時會用 cmd + argv 執行，#INPUT# 會被訊息內容取代
+[opencode]
+cmd = "opencode"
+argv = ["run", "#INPUT#"]
+# work_dir = "/tmp"

@@ -9,15 +9,15 @@ use serenity::async_trait;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 
-use crate::config::Profile;
+use crate::config::Config;
 use crate::inbound::extract_message_metadata;
 use crate::outbound::send_message_to_channel;
 use crate::slash_commands::{self, CommandContext, ResponseHandle};
 
 /// 🤖 Serve 模式 handler
-/// 內含 profile（用嚟攞 bot_token, channel_ids, targets）
+/// 內含 config（用嚟攞 bot_token, channel_ids, targets）
 pub struct ServeHandler {
-    pub profile: Profile,
+    pub config: Config,
 }
 
 /// Validate command name matches ^[a-z0-9_-]+$
@@ -56,12 +56,12 @@ impl EventHandler for ServeHandler {
         // 📡 Channel filtering: DM always accepted; Guild check channel_ids
         if msg.guild_id.is_some() {
             // Guild message — check channel_ids unless wildcard
-            if !self.profile.is_wildcard() {
+            if !self.config.is_wildcard() {
                 let channel_id_str = msg.channel_id.get().to_string();
-                if !self.profile.channel_ids.contains(&channel_id_str) {
+                if !self.config.channel_ids.contains(&channel_id_str) {
                     info!(
                         "🚫 Ignored: channel {} not in allowed list {:?} (msg={})",
-                        channel_id_str, self.profile.channel_ids, msg.id
+                        channel_id_str, self.config.channel_ids, msg.id
                     );
                     return;
                 }
@@ -83,10 +83,10 @@ impl EventHandler for ServeHandler {
             }
         }
 
-        // 🔍 Only process messages starting with "/"
+        // 🔍 Only process messages starting with "/" when cli_only is true
         let content = metadata.content.clone();
         let content = content.trim();
-        if !content.starts_with('/') {
+        if self.config.cli_only && !content.starts_with('/') {
             info!(
                 "🚫 Ignored: message without '/' prefix (msg={}, author={})",
                 msg.id, metadata.author.name
@@ -236,7 +236,7 @@ impl EventHandler for ServeHandler {
 
     async fn ready(&self, ctx: Context, data_about_bot: Ready) {
         info!("✅ Bot is ready! Logged in as {}", data_about_bot.user.name);
-        info!("🎯 Active profile: {}", self.profile.profile_id);
+        info!("🎯 Active profile: {}", self.config.profile_id());
 
         // Register slash commands with Discord API
         slash_commands::register_all_commands(&ctx.http, data_about_bot.user.id).await;

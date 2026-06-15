@@ -1,5 +1,5 @@
 //! 🎯 命令行參數模組
-//! 使用 clap 解析 CLI 參數，支援 serve 同 send 命令 ✨
+//! 使用 clap 解析 CLI 參數，支援 serve、send、profiles 命令 ✨
 
 use clap::{Parser, Subcommand};
 
@@ -7,28 +7,27 @@ use clap::{Parser, Subcommand};
 #[derive(Parser, Debug)]
 #[command(name = "opencb", version, about = "OpenCB Discord bot 🚀")]
 pub struct Cli {
-    /// 📝 配置文件路徑（全局參數，serve 同 send 都用得）
+    /// 📝 配置文件路徑（全局參數）
     #[arg(short, long, global = true, value_name = "FILE")]
     pub config: Option<String>,
 
     /// 🎯 可選 target 名（例如 `opencb opencode`）
-    /// 🔁 收到訊息時會用呢個 target 執行外部 CLI，再回覆 stdout
     #[arg(value_name = "TARGET")]
     pub target: Option<String>,
 
-    /// 🎮 子命令（serve 啟動服務，send 發送消息）
+    /// 🎮 子命令
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
 
-/// 🎮 子命令枚舉，分 serve 同 send 兩種模式
+/// 🎮 子命令枚舉
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// 🌐 啟動 Discord bot 服務
     Serve {
-        /// 🎯 Profile ID to use (default: "default")
-        #[arg(long = "profile", default_value = "default")]
-        profile: String,
+        /// 🎯 Profile ID to use (looks for ~/.config/opencb/<id>/config.toml)
+        #[arg(long = "profile")]
+        profile: Option<String>,
     },
 
     /// 💬 發送一條消息（支援多個詞語自動拼接）
@@ -42,9 +41,9 @@ pub enum Commands {
         /// 📅 可選排程日期 YYYY-MM-DD（例如 -d "2026-12-11"）
         #[arg(short = 'd', long = "date")]
         date: Option<String>,
-        /// 🎯 Profile ID to use (default: "default")
-        #[arg(long = "profile", default_value = "default")]
-        profile: String,
+        /// 🎯 Profile ID to use (looks for ~/.config/opencb/<id>/config.toml)
+        #[arg(long = "profile")]
+        profile: Option<String>,
         /// 📣 覆蓋發送目標頻道，comma-separated list or single id (e.g. --rc "123,456")
         #[arg(long = "rc")]
         rc: Option<String>,
@@ -54,5 +53,60 @@ pub enum Commands {
         /// 🏷 要在訊息尾部 mention 嘅 user id 列表，comma-separated (e.g. --mu "111,222")
         #[arg(long = "mu")]
         mu: Option<String>,
+    },
+
+    /// 📋 Manage profiles (list, add, remove, config)
+    Profiles {
+        /// 📂 掃描指定目錄下的 profiles（預設 ~/.config/opencb/）
+        #[arg(long = "config")]
+        config: Option<String>,
+        /// 🎮 Profile subcommand
+        #[command(subcommand)]
+        subcommand: Option<Profiles>,
+    },
+}
+
+/// 🎮 Profile management subcommands
+#[derive(Subcommand, Debug)]
+pub enum Profiles {
+    /// ➕ Create a new profile
+    New {
+        /// Profile ID (lowercase, digits, hyphens, underscores)
+        id: String,
+        /// Discord bot token
+        #[arg(long = "bot-token")]
+        bot_token: Option<String>,
+        /// Channel IDs to listen on (repeatable, or "*" for all)
+        #[arg(long = "channel-ids")]
+        channel_ids: Option<Vec<String>>,
+        /// Only process slash commands (default: true)
+        #[arg(long = "cli-only")]
+        cli_only: Option<bool>,
+        /// Enable debug logging
+        #[arg(long)]
+        debug: Option<bool>,
+    },
+
+    /// ➖ Remove a profile
+    Rm {
+        /// Profile ID to remove
+        id: String,
+    },
+
+    /// 👀 Show config key-value pairs
+    Show {
+        /// Profile ID
+        id: String,
+    },
+
+    /// ✏️ Set a config value
+    Set {
+        /// Profile ID
+        id: String,
+        /// Config key (e.g. bot_token, cli_only, channel_ids)
+        key: String,
+        /// Value(s) — strings for most keys, repeatable for arrays
+        #[arg(num_args = 1..)]
+        values: Vec<String>,
     },
 }
