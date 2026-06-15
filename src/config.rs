@@ -344,7 +344,7 @@ pub fn load_config(
     if config_path.is_none() && profile.is_none() {
         let needs_setup = config.bot_token.is_empty()
             || config.bot_token == "YOUR_BOT_TOKEN_HERE"
-            || config.channel_ids.iter().all(|s| s == "*");
+            || config.channel_ids.is_empty();
 
         if needs_setup {
             eprintln!("Default profile is not configured. Launching interactive setup...");
